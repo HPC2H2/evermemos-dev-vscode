@@ -146,7 +146,7 @@ function createClient(config: EvermemConfig): AxiosInstance {
 
 /**
  * 包装一次请求，支持指数退避的自动重试。 
- * @param requesrtFn 实际执行请求的函数，应该返回一个 Promise
+ * @param requestFn 实际执行请求的函数，应该返回一个 Promise
  * @param maxRetries 最大重试次数，默认2次
  * @param baseDelay 基础延迟时间，单位毫秒，默认1000ms
  * @returns 请求成功时的响应数据
