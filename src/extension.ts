@@ -6,7 +6,7 @@
  * @author      HPC2H2
  * @version     1.0.0
  * @date        2026-02-14
- * @lastModified 2026-02-15 by HPC2H2
+ * @lastModified 2026-02-16 by HPC2H2
  * 
  * @copyright   Copyright (c) 2026
  * @license     MIT
@@ -66,13 +66,13 @@ interface ApiResponse<T = any> {
 }
 
 // ==================== 常量定义 ====================
-// 所有后端API路径，ts中使用 as const推断为字面量类型（其实就是常量）
-const API_ENDPOINTS = {
-  MEMORIES: '/api/v1/memories',
-  RECAP: '/api/v1/memories/recap',
-  OVERVIEW: '/api/v1/memories/overview',
-  HEALTH: '/health',
-  MEMORIES_SEARCH: '/api/v1/memories/search',
+// 所有后端API路径，优先使用 v1（本地 apiv1 正常），并提供回退路径以兼容不同部署
+const API_PATHS = {
+  MEMORIES: ['/api/v1/memories', '/api/v0/memories', '/api/memories', '/memories'],
+  MEMORIES_SEARCH: ['/api/v1/memories/search', '/api/v0/memories/search', '/api/memories/search', '/memories/search'],
+  CONVERSATION_META: ['/api/v1/memories/conversation-meta', '/api/v0/memories/conversation-meta', '/api/memories/conversation-meta', '/memories/conversation-meta'],
+  REQUEST_STATUS: ['/api/v1/status/request', '/api/v0/status/request', '/api/status/request', '/status/request'],
+  HEALTH: ['/health', '/'],
 } as const;
 
 // 扩展在UI中的名
@@ -88,8 +88,9 @@ const EXTENSION_ID = 'evermem';
  * - 添加请求和响应拦截器，记录日志并处理错误
 **/
 function createClient(config: EvermemConfig): AxiosInstance {
-  // 清理 URL，移除末尾的斜杠
-  const baseURL = config.apiBaseUrl.trim().replace(/\/+$/, '');
+  // 清理 URL，移除末尾的斜杠，并兼容用户填了 "/api"、"/api/v0"、"/api/v1" 前缀，避免生成重复路径
+  const trimmedBase = config.apiBaseUrl.trim().replace(/\/+$/, '');
+  const baseURL = trimmedBase.replace(/\/api(?:\/v\d+)?$/, '');
   
   const instance = axios.create({
     baseURL,
@@ -252,6 +253,18 @@ function handleError(err: unknown, context: string): void {
   if (axios.isAxiosError(err)) {
     const status = err.response?.status;
     const data = err.response?.data as any;
+    // 2.15 尝试从响应数据中提取错误详情，如果是对象则格式化为字符串
+    const serializedData = data
+      ? (typeof data === 'string' ? data : JSON.stringify(data, null, 2))
+      : undefined;
+
+    console.error(`[${EXTENSION_NAME}] HTTP error detail:`, {
+      url: err.config?.url,
+      method: err.config?.method,
+      status,
+      headers: err.response?.headers,
+      data,
+    });
     
     // 根据不同的 HTTP 状态码，给出对应的提示
     if (status === 401) {
@@ -271,6 +284,8 @@ function handleError(err: unknown, context: string): void {
       const errorMsg = data.message || data.error || data.detail || data.msg;
       if (errorMsg) {
         message += `: ${errorMsg}`;
+      } else if (serializedData) {
+        message += ` | Detail: ${serializedData}`;
       }
     }
 
@@ -315,25 +330,20 @@ function handleError(err: unknown, context: string): void {
  * 若改短点不存在，则回退请求根路径 /。
  */
 async function testConnection(config: EvermemConfig): Promise<boolean> {
-  try {
-    const client = createClient(config);
-    // 正确使用常量 API_ENDPOINTS.HEALTH
-    const response = await requestWithRetry(
-      () => client.get(API_ENDPOINTS.HEALTH, { timeout: 5000 })
-    );
-    return response.status === 200;
-  } catch (error) {
-    // 如果 /health 端点不存在，尝试访问根路径作为兜底
+  const client = createClient(config);
+  for (const path of API_PATHS.HEALTH) {
     try {
-      const client = createClient(config);
       const response = await requestWithRetry(
-        () => client.get('/', { timeout: 5000 })
+        () => client.get(path, { timeout: 5000 })
       );
-      return response.status < 500;
-    } catch {
-      return false;
+      if (response.status < 500) {
+        return true;
+      }
+    } catch (error) {
+      // ignore and try next
     }
   }
+  return false;
 }
 
 
@@ -493,16 +503,24 @@ async function handleAddMemory(): Promise<void> {
     return;
   }
 
-  // 获取当前选区或文件内容，以及相关的元信息
+  // 获取当前选区或文件内容，以及相关的元信息；若没有文本，则让用户手动输入
   const selection = getCurrentSelectionOrFile();
-  if (!selection) {
-    return;
+  let text = selection?.text || '';
+  if (!text) {
+    const input = await vscode.window.showInputBox({
+      title: `${EXTENSION_NAME}: Add memory`,
+      prompt: '输入要添加的内容',
+      ignoreFocusOut: true,
+    });
+    if (!input) { return; }
+    text = input.trim();
   }
 
-  // 解构出文本和元信息，准备发送给后端
-  const { text, meta } = selection;
   // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
+
+  const userId = vscode.env.machineId || 'vscode-user';
+  const groupId = vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined;
 
   try {
     // 显示进度条，并尝试连接服务器请求创建记忆
@@ -515,42 +533,56 @@ async function handleAddMemory(): Promise<void> {
       async (progress) => {
         progress.report({ increment: 30 });
         
-        const response = await requestWithRetry(() =>
-          client.post(API_ENDPOINTS.MEMORIES, {
-            content: text,
-            meta,
-            tags: ['vscode', meta.file_info.language || 'unknown'],
-            source: 'vscode-extension',
-          })
-        );
+        // https://docs.evermind.ai/api-reference/core-memory-operation/add-memories 字段说明
+        const payload: Record<string, any> = {
+          message_id: `vscode-${Date.now()}`,
+          create_time: new Date().toISOString(),
+          sender: userId,
+          content: text,
+          group_id: groupId,
+          group_name: groupId,
+          flush: true,
+        };
+        
+        // 尝试多个版本的路径（优先 v1，再回退）
+        const memoryPaths = API_PATHS.MEMORIES;
+
+        let response: any; 
+        let lastError: any;
+        for (const path of memoryPaths) {
+          try {
+            response = await requestWithRetry(() => client.post(path, payload));
+            lastError = undefined;
+            break;
+          } catch (err) {
+            lastError = err;
+            if (axios.isAxiosError(err) && err.response?.status === 404) {
+              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+              continue;
+            }
+            throw err;
+          }
+        }
+
+        if (!response && lastError) {
+          throw lastError;
+        }
 
         progress.report({ increment: 70 });
 
-        const responseData = response.data;
-        let memory: MemoryItem | undefined;
-        let memoryId = 'unknown';
-
-        // 安全地提取内存数据
-        if (isApiResponse<MemoryItem>(responseData) && responseData.data) {
-          memory = responseData.data;
-        } else if (isMemoryItem(responseData)) {
-          memory = responseData;
-        }
-
-        if (memory) {
-          memoryId = memory.id || memory.memory_id || 'unknown';
-        }
-
-        const memoryUrl = `${config.apiBaseUrl}/memories/${memoryId}`;
+        const responseData = response?.data || {};
+        const requestId =
+          (responseData as any).request_id ||
+          (isApiResponse<any>(responseData) && (responseData as any).data?.request_id) ||
+          'unknown';
+        const statusText =
+          (responseData as any).status ||
+          (isApiResponse<any>(responseData) && (responseData as any).data?.status) ||
+          'accepted';
 
         vscode.window.showInformationMessage(
-          `${EXTENSION_NAME}: Memory added successfully!`,
-          'View Details'
-        ).then(selection => {
-          if (selection === 'View Details') {
-            vscode.env.openExternal(vscode.Uri.parse(memoryUrl));
-          }
-        });
+          `${EXTENSION_NAME}: Memory request ${statusText}. request_id: ${requestId}`
+        );
       }
     );
   } catch (error) {
@@ -567,106 +599,116 @@ async function handleAddMemory(): Promise<void> {
  * @returns 
  */
 async function handleQuickRecap(): Promise<void> {
-
   // 读取并校验是否有配置
   const config = getConfig();
   if (!config) {
     return;
   }
 
-  // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
 
-  // 弹出输入框获取用户输入的问题
-  const question = await vscode.window.showInputBox({
-    title: `${EXTENSION_NAME}: Quick Recap`,
-    prompt: 'Optional: Ask a specific question (leave empty for general recap)',
-    placeHolder: 'e.g., What did I work on yesterday? What are my recent discoveries?',
+  const query = await vscode.window.showInputBox({
+    title: `${EXTENSION_NAME}: Search memories`,
+    prompt: '输入搜索关键词（留空则返回最近的记忆）',
+    placeHolder: 'e.g., coffee preference',
     ignoreFocusOut: true,
   });
-
-  // 如果用户取消输入，则直接推出
-  if (question === undefined) {
+  if (query === undefined) {
     return;
   }
 
   try {
-    // 显示进度条，并尝试连接服务器请求recap
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Generating recap...`, // 进度条标题
-        cancellable: true, // 用户可取消
+        title: `${EXTENSION_NAME}: Searching memories...`,
+        cancellable: true,
       },
       async (progress, token) => {
-        // 更新进度，报告当前任务正在连接服务器
-        progress.report({ increment: 20, message: 'Connecting to server...' });
-        
-        // 使用指数退避机制发送请求，来获取 recap 数据
-        const response = await requestWithRetry(
-          () =>
-            client.post(API_ENDPOINTS.RECAP, { // 向服务区发送 POST 请求
-              question: question?.trim() || undefined, // 用户输入的问题，未输入则使用服务端定义的默认值
-              context: {
-                workspace: vscode.workspace.name, // 当前工作区名称
-                timestamp: new Date().toISOString(), // 请求时间戳
-              },
-            }),
-          2, // 最大重试 2 次
-          1000 // 基础延迟 1000ms
-        );
+        progress.report({ increment: 20, message: 'Calling search API...' });
 
-        // 如果用户取消了操作，直接退出
+        const searchPayload = {
+          query: query?.trim() || undefined,
+          user_id: vscode.env.machineId || undefined,
+          group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
+          include_metadata: true,
+          top_k: 20,
+        };
+
+        let resp: any;
+        let lastErr: any;
+        for (const path of API_PATHS.MEMORIES_SEARCH) {
+          try {
+            resp = await requestWithRetry(() => client.get(path, { params: searchPayload }));
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (axios.isAxiosError(err) && err.response?.status === 404) {
+              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+              continue;
+            }
+            throw err;
+          }
+        }
+        if (!resp && lastErr) {
+          throw lastErr;
+        }
+
         if (token.isCancellationRequested) {
           return;
         }
 
-        // 更新进度，报告正在处理服务器响应
-        progress.report({ increment: 60, message: 'Processing response...' });
+        progress.report({ increment: 50, message: 'Rendering results...' });
 
-        // 从响应数据中提取 recap 内容，支持多种格式
-        const responseData = response.data;
-        let recap = 'No recap content available.'; // 默认值，如果没有可用 recap 则显示此文本
+        const data = resp?.data || {};
+        const result = (data as any).result || (isApiResponse<any>(data) ? (data as any).data : data);
+        // 官方 search 返回 memories: [{ episodic_memory: [...] }] 结构，需扁平化
+        const rawMemories: any[] = result?.memories || [];
+        const flattened: any[] = [];
+        rawMemories.forEach(group => {
+          if (group?.episodic_memory && Array.isArray(group.episodic_memory)) {
+            flattened.push(...group.episodic_memory);
+          } else if (Array.isArray(group)) {
+            flattened.push(...group);
+          } else if (group) {
+            flattened.push(group);
+          }
+        });
+        const profiles: any[] = result?.profiles || [];
+        const total = result?.total_count ?? flattened.length;
 
-        // 尝试通过不同方式提取 recap 数据
-        if (isApiResponse<RecapResponse>(responseData) && responseData.data) {
-          const recapData = responseData.data;
-          recap = recapData.recap || recapData.summary || JSON.stringify(recapData, null, 2);
-        } else if (isRecapResponse(responseData)) {
-          recap = responseData.recap || responseData.summary || JSON.stringify(responseData, null, 2);
-        } else if (typeof responseData === 'string') {
-          recap = responseData;
-        } else if (responseData && typeof responseData === 'object') {
-          recap = JSON.stringify(responseData, null, 2);
+        let md = `# ${EXTENSION_NAME} Search Results\n\n`;
+        md += `- Query: ${query || '(recent)'}\n- Total: ${total}\n\n`;
+
+        if (flattened.length) {
+          md += `## Memories\n`;
+          flattened.forEach((m, idx) => {
+            md += `### #${idx + 1}\n- user_id: ${m.user_id || ''}\n- group_id: ${m.group_id || ''}\n- type: ${m.memory_type || ''}\n- timestamp: ${m.timestamp || ''}\n- summary/content: ${m.summary || m.content || ''}\n\n`;
+          });
         }
 
-        //更新进度，报告即将打开生成的 recap
-        progress.report({ increment: 20, message: 'Opening recap...' });
-
-        // 创建并显示 markdown 文档
-        const markdownContent = `# ${EXTENSION_NAME} Recap\n\n${
-          question ? `## Question: ${question}\n\n` : ''
-        }${recap}\n\n---\n*Generated at ${new Date().toLocaleString()}*`;
+        if (profiles.length) {
+          md += `## Profiles\n`;
+          profiles.forEach((p, idx) => {
+            md += `### Profile #${idx + 1}\n- category: ${p.category || ''}\n- trait: ${p.trait_name || ''}\n- score: ${p.score ?? ''}\n- description: ${p.description || ''}\n\n`;
+          });
+        }
 
         const doc = await vscode.workspace.openTextDocument({
-          content: markdownContent,
+          content: md,
           language: 'markdown',
         });
-
         await vscode.window.showTextDocument(doc, {
-          viewColumn: vscode.ViewColumn.Beside, // 在编辑器旁边打开
-          preview: true, // 启用预览模式
-          preserveFocus: false, // 自动聚焦到新打开的文档上
+          viewColumn: vscode.ViewColumn.Beside,
+          preview: true,
+          preserveFocus: false,
         });
 
-        //显示信息提示 recap 创建完成
-        vscode.window.showInformationMessage(
-          `${EXTENSION_NAME}: Recap generated successfully!`
-        );
+        vscode.window.showInformationMessage(`${EXTENSION_NAME}: Search completed`);
       }
     );
   } catch (error) {
-    // 捕获错误并调用错误处理逻辑
     handleError(error, 'Quick recap');
   }
 }
@@ -686,27 +728,45 @@ async function handleProjectOverview(): Promise<void> {
     return;
   }
 
-  // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
 
   try {
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Fetching project overview...`,
+        title: `${EXTENSION_NAME}: Fetching memories overview...`,
         cancellable: true,
       },
       async (progress, token) => {
         progress.report({ increment: 30 });
 
-        const response = await requestWithRetry(() =>
-          client.get(API_ENDPOINTS.OVERVIEW, {
-            params: {
-              workspace: vscode.workspace.name,
-              include_stats: true,
-            },
-          })
-        );
+        const params = {
+          user_id: vscode.env.machineId || undefined,
+          group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
+          memory_type: 'episodic_memory',
+          limit: 40,
+          offset: 0,
+        };
+
+        let resp: any;
+        let lastErr: any;
+        for (const path of API_PATHS.MEMORIES) {
+          try {
+            resp = await requestWithRetry(() => client.get(path, { params }));
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (axios.isAxiosError(err) && err.response?.status === 404) {
+              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+              continue;
+            }
+            throw err;
+          }
+        }
+        if (!resp && lastErr) {
+          throw lastErr;
+        }
 
         if (token.isCancellationRequested) {
           return;
@@ -714,55 +774,27 @@ async function handleProjectOverview(): Promise<void> {
 
         progress.report({ increment: 50 });
 
-        const responseData = response.data;
-        let overview = 'No overview content available.';
-        let stats: { project_count?: number; memory_count?: number; last_updated?: string } = {};
+        const data = resp?.data || {};
+        const result = (data as any).result || (isApiResponse<any>(data) ? (data as any).data : data);
+        const memories: any[] = result?.memories || [];
+        const total = result?.total_count ?? memories.length;
+        const metadata = result?.metadata || {};
 
-        // 安全地提取overview数据
-        if (isApiResponse<OverviewResponse>(responseData) && responseData.data) {
-          const overviewData = responseData.data;
-          overview = overviewData.overview || JSON.stringify(overviewData, null, 2);
-          stats = {
-            project_count: overviewData.project_count,
-            memory_count: overviewData.memory_count,
-            last_updated: overviewData.last_updated,
-          };
-        } else if (isOverviewResponse(responseData)) {
-          overview = responseData.overview || JSON.stringify(responseData, null, 2);
-          stats = {
-            project_count: responseData.project_count,
-            memory_count: responseData.memory_count,
-            last_updated: responseData.last_updated,
-          };
-        } else if (typeof responseData === 'string') {
-          overview = responseData;
-        } else if (responseData && typeof responseData === 'object') {
-          overview = JSON.stringify(responseData, null, 2);
+        let md = `# ${EXTENSION_NAME} Memories Overview\n\n`;
+        md += `- Total memories: ${total}\n`;
+        md += `- User: ${params.user_id || 'n/a'}\n`;
+        md += `- Group: ${params.group_id || 'n/a'}\n`;
+        if (metadata.memory_type) {
+          md += `- memory_type: ${metadata.memory_type}\n`;
         }
+        md += '\n## Latest items\n';
 
-        progress.report({ increment: 20 });
-
-        // 创建 markdown 内容
-        let markdownContent = `# ${EXTENSION_NAME} Project Overview\n\n`;
-
-        if (stats.project_count !== undefined || stats.memory_count !== undefined) {
-          markdownContent += `## Statistics\n`;
-          if (stats.project_count !== undefined) {
-            markdownContent += `- Total Projects: ${stats.project_count}\n`;
-          }
-          if (stats.memory_count !== undefined) {
-            markdownContent += `- Total Memories: ${stats.memory_count}\n`;
-          }
-          if (stats.last_updated) {
-            markdownContent += `- Last Updated: ${new Date(stats.last_updated).toLocaleString()}\n`;
-          }
-          markdownContent += '\n';
-        }
-
-        markdownContent += `## Overview\n${overview}\n\n---\n*Generated at ${new Date().toLocaleString()}*`;
+        memories.forEach((m, idx) => {
+          md += `### #${idx + 1}\n- user_id: ${m.user_id || ''}\n- group_id: ${m.group_id || ''}\n- type: ${m.memory_type || ''}\n- timestamp: ${m.timestamp || ''}\n- summary/content: ${m.summary || m.content || ''}\n\n`;
+        });
 
         const doc = await vscode.workspace.openTextDocument({
-          content: markdownContent,
+          content: md,
           language: 'markdown',
         });
 
@@ -773,7 +805,7 @@ async function handleProjectOverview(): Promise<void> {
         });
 
         vscode.window.showInformationMessage(
-          `${EXTENSION_NAME}: Project overview loaded successfully!`
+          `${EXTENSION_NAME}: Memories overview loaded successfully!`
         );
       }
     );
@@ -805,6 +837,7 @@ async function handleDeleteMemory(): Promise<void> {
       [
         { label: '$(search) Search memories', description: 'Search by keyword', value: 'search' },
         { label: '$(list-unordered) View recent memories', description: 'Show latest memories', value: 'recent' },
+        { label: '$(device-camera) Refresh last add (by request_id)', description: 'Check request status then search', value: 'status' },
       ],
       {
         placeHolder: 'How would you like to find memories?',
@@ -817,7 +850,11 @@ async function handleDeleteMemory(): Promise<void> {
     }
 
     let searchTerm: string | undefined;
-    let params: Record<string, any> = { limit: 100 };
+    const searchPayload: Record<string, any> = {
+      user_id: vscode.env.machineId || undefined,
+      group_ids: vscode.workspace.name ? [`vscode-${vscode.workspace.name}`] : undefined,
+      top_k: 50,
+    };
 
     if (searchMethod.value === 'search') {
       searchTerm = await vscode.window.showInputBox({
@@ -829,7 +866,38 @@ async function handleDeleteMemory(): Promise<void> {
         return; // 用户取消
       }
       if (searchTerm.trim()) {
-        params.search = searchTerm.trim();
+        searchPayload.query = searchTerm.trim();
+      }
+    }
+
+    // 若选择按 request_id 刷新，则先输入 request_id，查询状态后再搜索
+    if (searchMethod.value === 'status') {
+      const reqId = await vscode.window.showInputBox({
+        prompt: 'Enter request_id returned by Add memory',
+        placeHolder: 'req-xxx or uuid',
+        ignoreFocusOut: true,
+      });
+      if (!reqId) {
+        return;
+      }
+      try {
+        let statusResp: any;
+        for (const path of API_PATHS.REQUEST_STATUS) {
+          try {
+            statusResp = await requestWithRetry(() => client.get(path, { params: { request_id: reqId } }));
+            break;
+          } catch (err) {
+            if (axios.isAxiosError(err) && err.response?.status === 404) {
+              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+              continue;
+            }
+            throw err;
+          }
+        }
+        console.log(`[${EXTENSION_NAME}] request status`, statusResp?.data);
+      } catch (err) {
+        handleError(err, 'Request status');
+        return;
       }
     }
 
@@ -842,9 +910,25 @@ async function handleDeleteMemory(): Promise<void> {
       async (progress, token) => {
         progress.report({ increment: 30 });
 
-        const response = await requestWithRetry(() =>
-          client.get(API_ENDPOINTS.MEMORIES, { params })
-        );
+        let resp: any;
+        let lastErr: any;
+        for (const path of API_PATHS.MEMORIES_SEARCH) {
+          try {
+            resp = await requestWithRetry(() => client.get(path, { params: searchPayload }));
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (axios.isAxiosError(err) && err.response?.status === 404) {
+              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+              continue;
+            }
+            throw err;
+          }
+        }
+        if (!resp && lastErr) {
+          throw lastErr;
+        }
 
         if (token.isCancellationRequested) {
           return;
@@ -852,24 +936,21 @@ async function handleDeleteMemory(): Promise<void> {
 
         progress.report({ increment: 40 });
 
-        const responseData = response.data;
-        let memories: MemoryItem[] = [];
-
-        // 安全地提取记忆列表
-        if (isApiResponse<MemoryListResponse | MemoryItem[]>(responseData)) {
-          const data = responseData.data || responseData;
-          if (Array.isArray(data)) {
-            memories = data;
-          } else if (isMemoryListResponse(data)) {
-            memories = data.items || [];
+        const responseData = resp?.data || {};
+        const result = (responseData as any).result || (isApiResponse<any>(responseData) ? (responseData as any).data : responseData);
+        const rawMemories: any[] = result?.memories || [];
+        const flattened: any[] = [];
+        rawMemories.forEach(group => {
+          if (group?.episodic_memory && Array.isArray(group.episodic_memory)) {
+            flattened.push(...group.episodic_memory);
+          } else if (Array.isArray(group)) {
+            flattened.push(...group);
+          } else if (group) {
+            flattened.push(group);
           }
-        } else if (Array.isArray(responseData)) {
-          memories = responseData;
-        } else if (isMemoryListResponse(responseData)) {
-          memories = responseData.items || [];
-        }
+        });
 
-        if (!memories.length) {
+        if (!flattened.length) {
           const message = searchTerm
             ? `No memories found matching "${searchTerm}"`
             : 'No memories found';
@@ -879,37 +960,30 @@ async function handleDeleteMemory(): Promise<void> {
 
         progress.report({ increment: 30 });
 
-        // 格式化显示项 - 修复变量名错误
-        const pickItems = memories.map((memory, index) => {
-          const memoryId = memory.id || memory.memory_id || `memory-${index}`;
-          const dateStr = memory.created_at || '';
+        const pickItems = flattened.map((memory, index) => {
+          const memoryId = memory.event_id || memory.id || memory.memory_id || `memory-${index}`;
+          const dateStr = memory.timestamp || memory.created_at || '';
           const date = dateStr ? new Date(dateStr) : null;
-          
-          // 提取内容预览
-          const content = memory.content || '';
+          const content = memory.summary || memory.content || '';
           const preview = safeTruncate(content, 100);
-          
-          const filePath = memory.meta?.file_info?.path;
-          const fileName = filePath ? ` - ${filePath.split(/[\\/]/).pop()}` : '';
 
           return {
-            label: `$(note) ${preview || '(empty content)'}${fileName}`,
+            label: `$(note) ${preview || '(empty content)'}`,
             description: date ? date.toLocaleDateString() + ' ' + date.toLocaleTimeString() : '',
-            detail: `ID: ${memoryId}`, // ✅ 修复：使用 memoryId 而不是未定义的 id
+            detail: `ID: ${memoryId}`,
             memory,
             alwaysShow: true,
           };
         });
 
-        // 添加查看更多选项（如果有分页）
-        const hasMore = isMemoryListResponse(responseData) && responseData.has_more;
+        const hasMore = result?.has_more;
         if (hasMore) {
           pickItems.push({
-            label: '$(ellipsis) Load more...',
+            label: '$(ellipsis) Load more (not implemented)',
             description: '',
             detail: '',
             memory: {} as MemoryItem,
-			alwaysShow: true,
+            alwaysShow: true,
           });
         }
 
@@ -924,23 +998,20 @@ async function handleDeleteMemory(): Promise<void> {
           return;
         }
 
-        // 处理"加载更多"
-        if (picked.label === '$(ellipsis) Load more...') {
+        if (picked.label.startsWith('$(ellipsis)')) {
           vscode.window.showInformationMessage(`${EXTENSION_NAME}: Pagination not implemented yet`);
           return;
         }
 
-        // 确认删除
         const memory = picked.memory;
-        const memoryId = memory.id || memory.memory_id; // ✅ 重新获取 memoryId
-        
+        const memoryId = memory.id || memory.memory_id || memory.event_id;
         if (!memoryId) {
           vscode.window.showErrorMessage(`${EXTENSION_NAME}: Memory ID not found`);
           return;
         }
 
-        const confirmMessage = memory.content
-          ? `Delete memory: "${safeTruncate(memory.content, 50)}"?`
+        const confirmMessage = memory.summary || memory.content
+          ? `Delete memory: "${safeTruncate(memory.summary || memory.content, 50)}"?`
           : `Delete memory ${memoryId}?`;
 
         const confirm = await vscode.window.showWarningMessage(
@@ -962,7 +1033,31 @@ async function handleDeleteMemory(): Promise<void> {
               cancellable: false,
             },
             async () => {
-              await client.delete(`${API_ENDPOINTS.MEMORIES}/${encodeURIComponent(memoryId)}`);
+              let deleteResp: any;
+              let delErr: any;
+              for (const path of API_PATHS.MEMORIES) {
+                try {
+                  // 官方 DELETE /memories 采用 event_id/user_id/group_id 过滤
+                  const body = {
+                    event_id: memoryId,
+                    user_id: vscode.env.machineId || undefined,
+                    group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
+                  };
+                  deleteResp = await requestWithRetry(() => client.delete(path, { data: body }));
+                  delErr = undefined;
+                  break;
+                } catch (err) {
+                  delErr = err;
+                  if (axios.isAxiosError(err) && err.response?.status === 404) {
+                    console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+                    continue;
+                  }
+                  throw err;
+                }
+              }
+              if (!deleteResp && delErr) {
+                throw delErr;
+              }
             }
           );
           
