@@ -146,7 +146,6 @@ function createClient(config: EvermemConfig): AxiosInstance {
 
 /**
  * 包装一次请求，支持指数退避的自动重试。 
- * @param client 已配置的 Axios 实例
  * @param requesrtFn 实际执行请求的函数，应该返回一个 Promise
  * @param maxRetries 最大重试次数，默认2次
  * @param baseDelay 基础延迟时间，单位毫秒，默认1000ms
@@ -154,7 +153,6 @@ function createClient(config: EvermemConfig): AxiosInstance {
  * @throws 最后一次请求失败的错误
 */
 async function requestWithRetry<T>(
-  client: AxiosInstance,
   requestFn: () => Promise<T>,
   maxRetries = 2,
   baseDelay = 1000
@@ -321,7 +319,6 @@ async function testConnection(config: EvermemConfig): Promise<boolean> {
     const client = createClient(config);
     // 正确使用常量 API_ENDPOINTS.HEALTH
     const response = await requestWithRetry(
-      client,
       () => client.get(API_ENDPOINTS.HEALTH, { timeout: 5000 })
     );
     return response.status === 200;
@@ -330,7 +327,6 @@ async function testConnection(config: EvermemConfig): Promise<boolean> {
     try {
       const client = createClient(config);
       const response = await requestWithRetry(
-        client,
         () => client.get('/', { timeout: 5000 })
       );
       return response.status < 500;
@@ -519,7 +515,7 @@ async function handleAddMemory(): Promise<void> {
       async (progress) => {
         progress.report({ increment: 30 });
         
-        const response = await requestWithRetry(client, () =>
+        const response = await requestWithRetry(() =>
           client.post(API_ENDPOINTS.MEMORIES, {
             content: text,
             meta,
@@ -608,7 +604,6 @@ async function handleQuickRecap(): Promise<void> {
         
         // 使用指数退避机制发送请求，来获取 recap 数据
         const response = await requestWithRetry(
-          client,
           () =>
             client.post(API_ENDPOINTS.RECAP, { // 向服务区发送 POST 请求
               question: question?.trim() || undefined, // 用户输入的问题，未输入则使用服务端定义的默认值
@@ -704,7 +699,7 @@ async function handleProjectOverview(): Promise<void> {
       async (progress, token) => {
         progress.report({ increment: 30 });
 
-        const response = await requestWithRetry(client, () =>
+        const response = await requestWithRetry(() =>
           client.get(API_ENDPOINTS.OVERVIEW, {
             params: {
               workspace: vscode.workspace.name,
@@ -847,7 +842,7 @@ async function handleDeleteMemory(): Promise<void> {
       async (progress, token) => {
         progress.report({ increment: 30 });
 
-        const response = await requestWithRetry(client, () =>
+        const response = await requestWithRetry(() =>
           client.get(API_ENDPOINTS.MEMORIES, { params })
         );
 
