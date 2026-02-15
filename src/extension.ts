@@ -13,36 +13,35 @@
  */
 
 import * as vscode from 'vscode'; // VS Code API
-import axios, { AxiosInstance, AxiosError } from 'axios'; // http服务器通信
-import { v4 as uuidv4 } from 'uuid';
-   
-
-   
-
+import axios, { AxiosInstance, AxiosError } from 'axios'; // http服务器通信   
 
 // ==================== 接口定义 ====================
 // ts问号表示可选属性，| undefined 是冗余的，可以省略
+
+// Evemem插件的全局配置
 interface EvermemConfig {
   apiBaseUrl: string;
   authToken?: string;
 } 
 
+// 单条记忆（memory）的数据结构
 interface MemoryItem {
   id: string;
-  memory_id?: string;
-  content: string;
-  created_at?: string;
-  createdAt?: string;
-  meta?: Record<string, any>;
+  memory_id?: string; // memory的唯一标识
+  content: string; // memory的内容
+  created_at?: string; // 服务器返回的创建时间
+  meta?: Record<string, any>; // 服务器返回的元数据，结构不固定
 }
 
+// 查询记忆列表的响应结构
 interface MemoryListResponse {
   items: MemoryItem[];
-  total?: number;
+  total?: number; // 总条数（可选）
   has_more?: boolean;
   next_cursor?: string;
 }
 
+// 快速回顾（recap）的响应结构
 interface RecapResponse {
   recap: string;
   summary?: string;
@@ -50,6 +49,7 @@ interface RecapResponse {
   created_at?: string;
 }
 
+// 项目概览（Overiew）的响应结构
 interface OverviewResponse {
   overview: string;
   project_count?: number;
@@ -66,6 +66,7 @@ interface ApiResponse<T = any> {
 }
 
 // ==================== 常量定义 ====================
+// 所有后端API路径，ts中使用 as const推断为字面量类型（其实就是常量）
 const API_ENDPOINTS = {
   MEMORIES: '/api/v1/memories',
   RECAP: '/api/v1/memories/recap',
@@ -74,10 +75,18 @@ const API_ENDPOINTS = {
   MEMORIES_SEARCH: '/api/v1/memories/search',
 } as const;
 
+// 扩展在UI中的名
 const EXTENSION_NAME = 'EverMemOS';
+// 配置项前缀，也就是setting.json中对应的key
 const EXTENSION_ID = 'evermem';
 
 // ==================== 辅助函数 ====================
+/**
+ * 根据用户配置，创建并返回一个配置好的 Axios实例，用于与EverMemOS服务器通信
+ * - 自动处理 baseURL尾部斜杠
+ * - 如有 authToken，则在请求头中添加Authorization字段
+ * - 添加请求和响应拦截器，记录日志并处理错误
+**/
 function createClient(config: EvermemConfig): AxiosInstance {
   // 清理 URL，移除末尾的斜杠
   const baseURL = config.apiBaseUrl.trim().replace(/\/+$/, '');
@@ -94,6 +103,7 @@ function createClient(config: EvermemConfig): AxiosInstance {
   // 请求拦截器
   instance.interceptors.request.use(
     (request) => {
+      // 如果配置了Bearer Token，则添加到请求头
       if (config.authToken) {
         request.headers = request.headers ?? {};
         request.headers['Authorization'] = `Bearer ${config.authToken}`;
@@ -134,6 +144,15 @@ function createClient(config: EvermemConfig): AxiosInstance {
   return instance;
 }
 
+/**
+ * 包装一次请求，支持指数退避的自动重试。 
+ * @param client 已配置的 Axios 实例
+ * @param requesrtFn 实际执行请求的函数，应该返回一个 Promise
+ * @param maxRetries 最大重试次数，默认2次
+ * @param baseDelay 基础延迟时间，单位毫秒，默认1000ms
+ * @returns 请求成功时的响应数据
+ * @throws 最后一次请求失败的错误
+*/
 async function requestWithRetry<T>(
   client: AxiosInstance,
   requestFn: () => Promise<T>,
@@ -142,34 +161,51 @@ async function requestWithRetry<T>(
 ): Promise<T> {
   let lastError: any;
   
+  // 循环次数：0（初始尝试） + maxRetries（重试次数）
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      // 调用真正的请求函数，若成功则直接返回结果
       return await requestFn();
     } catch (err) {
+      // 捕获异常，记录下来以便在全部尝试结束后抛出
       lastError = err;
       
-      // 如果是网络错误，等待后重试
+      // 判断是否为网络错误
       const isNetworkError = axios.isAxiosError(err) && 
-        (!err.response || err.code === 'ECONNABORTED' || err.code === 'ECONNREFUSED');
+        (!err.response || // 没有收到服务器响应
+          err.code === 'ECONNABORTED' || // 超时
+          err.code === 'ECONNREFUSED'); // 连接被拒绝
       
+          // 若是网络错误，且还有剩余重试次数，则执行指数退避
       if (isNetworkError && attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(2, attempt); // 指数退避
-        console.log(`[EverMemOS] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`);
+        // 计算本次等待时间: baseDelay * 2^attempt
+        // 第一次失败等待 1 s（baseDelay），第二次失败等待 2 s，第三次失败等待 4 s，以此类推
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.log(
+          `[EverMemOS] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`)
+          ;
+        // 使用 Promise + setTimeout 实现异步等待
         await new Promise(resolve => setTimeout(resolve, delay));
+        // 继续下一轮循环（再次调用 requestFn）
         continue;
       }
       break;
     }
   }
+  // 所有尝试都失败了，抛出最后一次失误给调用方
   throw lastError;
 }
 
+/**
+ * 读取 VS Code 设置，返回插件运行所需的配置对象。
+ * 若缺少必填项或格式错误，会弹窗提示并返回 null。
+ */
 function getConfig(): EvermemConfig | null {
   const cfg = vscode.workspace.getConfiguration(EXTENSION_ID);
   const apiBaseUrl = cfg.get<string>('apiBaseUrl', '').trim();
   const authToken = cfg.get<string>('authToken', '').trim();
 
-  // 验证必填配置
+  // 必填校验：API Base URL
   if (!apiBaseUrl) {
     vscode.window.showErrorMessage(
       `${EXTENSION_NAME}: API base URL is not configured. Please set "${EXTENSION_ID}.apiBaseUrl" in settings.`,
@@ -182,7 +218,7 @@ function getConfig(): EvermemConfig | null {
     return null;
   }
 
-  // 验证 URL 格式
+  // URL 格式校验
   try {
     new URL(apiBaseUrl);
   } catch (error) {
@@ -203,6 +239,12 @@ function getConfig(): EvermemConfig | null {
   };
 }
 
+/**
+ * 统一的错误处理函数，负责：
+ * - 控制台打印错误堆栈
+ * - 根据错误类型，构造用户友好的提示信息
+ * - 提供“打开设置”或“重试”等可选操作按钮
+ */
 function handleError(err: unknown, context: string): void {
   console.error(`[${EXTENSION_NAME}] ${context} failed:`, err);
 
@@ -213,6 +255,7 @@ function handleError(err: unknown, context: string): void {
     const status = err.response?.status;
     const data = err.response?.data as any;
     
+    // 根据不同的 HTTP 状态码，给出对应的提示
     if (status === 401) {
       message = `${EXTENSION_NAME}: Authentication failed. Please check your auth token.`;
       actions = ['Open Settings'];
@@ -225,6 +268,7 @@ function handleError(err: unknown, context: string): void {
       message = `${EXTENSION_NAME}: HTTP ${status}`;
     }
 
+    // 若后端返回了错误描述字段，将其追加到提示中
     if (data) {
       const errorMsg = data.message || data.error || data.detail || data.msg;
       if (errorMsg) {
@@ -232,6 +276,7 @@ function handleError(err: unknown, context: string): void {
       }
     }
 
+    // 处理网络层面的错误代码
     if (err.code === 'ECONNREFUSED') {
       message = `${EXTENSION_NAME}: Cannot connect to EverMemOS server. Please ensure it's running at ${err.config?.baseURL}`;
       actions = ['Open Settings', 'Retry'];
@@ -240,9 +285,11 @@ function handleError(err: unknown, context: string): void {
       actions = ['Retry'];
     }
   } else if (err instanceof Error) {
+    // 非 Axios错误，直接使用错误对象的 message
     message += `: ${err.message}`;
   }
 
+  // 显示错误弹窗并处理用户选择
   vscode.window.showErrorMessage(message, ...actions).then(selection => {
     if (selection === 'Open Settings') {
       vscode.commands.executeCommand('workbench.action.openSettings', EXTENSION_ID);
@@ -264,6 +311,11 @@ function handleError(err: unknown, context: string): void {
   });
 }
 
+/**
+ * 检测后端健康（health）接口是否可达。
+ * 首先尝试访问 /health
+ * 若改短点不存在，则回退请求根路径 /。
+ */
 async function testConnection(config: EvermemConfig): Promise<boolean> {
   try {
     const client = createClient(config);
@@ -290,6 +342,7 @@ async function testConnection(config: EvermemConfig): Promise<boolean> {
 
 
 // ==================== 类型守卫 ====================
+// 下面的函数用于在运行时判断对象是否符合特定接口， 帮助ts正确推导类型
 function isApiResponse<T>(obj: any): obj is ApiResponse<T> {
   return obj && typeof obj === 'object' && 'success' in obj;
 }
@@ -311,10 +364,16 @@ function isOverviewResponse(obj: any): obj is OverviewResponse {
 }
 
 // ==================== 文本处理函数 ====================
+/**
+ * 对文本进行安全截断，确保不会在单词中间断开。
+* - 删除换行符后再截断
+* - 优先在标点符号或空格处断开
+* - 超过阈值时，在截断点后追加省略号
+ */
 function safeTruncate(text: string, maxLength: number): string {
   if (!text || text.length <= maxLength) {return text || '';}
   
-  // 移除换行符
+  // 移除换行符，避免多行内容导致意外截断
   const cleanText = text.replace(/[\r\n]+/g, ' ');
   
   if (cleanText.length <= maxLength) {return cleanText;}
@@ -333,7 +392,7 @@ function safeTruncate(text: string, maxLength: number): string {
   
   const breakPoint = Math.max(lastPunctuation, lastSpace);
   
-  if (breakPoint > maxLength * 0.6) { // 如果有合适的断点
+  if (breakPoint > maxLength * 0.6) { // 如果有合适的断点，则在其后添加省略号
     return truncated.substring(0, breakPoint + 1).trim() + '...';
   }
   
@@ -341,6 +400,12 @@ function safeTruncate(text: string, maxLength: number): string {
 }
 
 // ==================== 核心功能 ====================
+/**
+ * 获取当前编辑器的选区或整个文件内容，并收集相关的元信息。
+ * - 当没有打开编辑器的时候返回 null
+ * - 当选区或文件为空时，弹出提示并返回 null
+ * - 返回对象包括纯文本/元数据（meta）以及文件信息（fileInfo）
+ */
 function getCurrentSelectionOrFile():
   | {
       text: string;
@@ -365,7 +430,7 @@ function getCurrentSelectionOrFile():
   const document = editor.document;
   const selection = editor.selection;
   
-  // 获取文本内容
+  // 获取全文件文本或选中的文本
   const fullText = document.getText();
   const selectedText = selection.isEmpty ? '' : document.getText(selection);
   const text = (selectedText || fullText).trim();
@@ -377,7 +442,7 @@ function getCurrentSelectionOrFile():
     return null;
   }
 
-  // 收集文件元数据
+  // 收集文件级别的元信息，供后端存储和后续检索使用
   const fileInfo = {
     path: document.uri.fsPath,
     language: document.languageId,
@@ -406,13 +471,23 @@ function getCurrentSelectionOrFile():
   return { text, meta, fileInfo };
 }
 
+/**
+ * "添加记忆"主流程：
+ * 1. 读取并校验配置
+ * 2. 检查服务器连通性
+ * 3. 获取当前编辑器的内容及元数据
+ * 4. 发送 POST 请求创建记忆
+ * 5. 根据返回的 MemoryItem 显示成功提示并提供跳转链接
+ * @returns 
+ */
 async function handleAddMemory(): Promise<void> {
+  // 读取并校验是否有配置
   const config = getConfig();
   if (!config) {
     return;
   }
 
-  // 验证连接
+  // 检测后端可达性
   const isConnected = await testConnection(config);
   if (!isConnected) {
     vscode.window.showErrorMessage(
@@ -422,15 +497,19 @@ async function handleAddMemory(): Promise<void> {
     return;
   }
 
+  // 获取当前选区或文件内容，以及相关的元信息
   const selection = getCurrentSelectionOrFile();
   if (!selection) {
     return;
   }
 
+  // 解构出文本和元信息，准备发送给后端
   const { text, meta } = selection;
+  // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
 
   try {
+    // 显示进度条，并尝试连接服务器请求创建记忆
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
@@ -483,15 +562,26 @@ async function handleAddMemory(): Promise<void> {
   }
 }
 
+/**
+ * "快速回顾"主流程：
+ * 1. 读取并校验配置
+ * 2. 获取用户输入的问题（可选）
+ * 3. 发送 POST 请求获取回顾内容
+ * 4. 根据返回的内容生成 Markdown 文档并在侧边栏显示
+ * @returns 
+ */
 async function handleQuickRecap(): Promise<void> {
+
+  // 读取并校验是否有配置
   const config = getConfig();
   if (!config) {
     return;
   }
 
+  // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
 
-  // 获取用户输入的问题
+  // 弹出输入框获取用户输入的问题
   const question = await vscode.window.showInputBox({
     title: `${EXTENSION_NAME}: Quick Recap`,
     prompt: 'Optional: Ask a specific question (leave empty for general recap)',
@@ -499,45 +589,51 @@ async function handleQuickRecap(): Promise<void> {
     ignoreFocusOut: true,
   });
 
-  // 用户取消输入
+  // 如果用户取消输入，则直接推出
   if (question === undefined) {
     return;
   }
 
   try {
+    // 显示进度条，并尝试连接服务器请求recap
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Generating recap...`,
-        cancellable: true,
+        title: `${EXTENSION_NAME}: Generating recap...`, // 进度条标题
+        cancellable: true, // 用户可取消
       },
       async (progress, token) => {
+        // 更新进度，报告当前任务正在连接服务器
         progress.report({ increment: 20, message: 'Connecting to server...' });
-
+        
+        // 使用指数退避机制发送请求，来获取 recap 数据
         const response = await requestWithRetry(
           client,
           () =>
-            client.post(API_ENDPOINTS.RECAP, {
-              question: question?.trim() || undefined,
+            client.post(API_ENDPOINTS.RECAP, { // 向服务区发送 POST 请求
+              question: question?.trim() || undefined, // 用户输入的问题，未输入则使用服务端定义的默认值
               context: {
-                workspace: vscode.workspace.name,
-                timestamp: new Date().toISOString(),
+                workspace: vscode.workspace.name, // 当前工作区名称
+                timestamp: new Date().toISOString(), // 请求时间戳
               },
             }),
-          2,
-          1000
+          2, // 最大重试 2 次
+          1000 // 基础延迟 1000ms
         );
 
+        // 如果用户取消了操作，直接退出
         if (token.isCancellationRequested) {
           return;
         }
 
+        // 更新进度，报告正在处理服务器响应
         progress.report({ increment: 60, message: 'Processing response...' });
 
+        // 从响应数据中提取 recap 内容，支持多种格式
         const responseData = response.data;
-        let recap = 'No recap content available.';
+        let recap = 'No recap content available.'; // 默认值，如果没有可用 recap 则显示此文本
 
-        // 安全地提取recap数据
+        // 尝试通过不同方式提取 recap 数据
         if (isApiResponse<RecapResponse>(responseData) && responseData.data) {
           const recapData = responseData.data;
           recap = recapData.recap || recapData.summary || JSON.stringify(recapData, null, 2);
@@ -549,6 +645,7 @@ async function handleQuickRecap(): Promise<void> {
           recap = JSON.stringify(responseData, null, 2);
         }
 
+        //更新进度，报告即将打开生成的 recap
         progress.report({ increment: 20, message: 'Opening recap...' });
 
         // 创建并显示 markdown 文档
@@ -562,27 +659,39 @@ async function handleQuickRecap(): Promise<void> {
         });
 
         await vscode.window.showTextDocument(doc, {
-          viewColumn: vscode.ViewColumn.Beside,
-          preview: true,
-          preserveFocus: false,
+          viewColumn: vscode.ViewColumn.Beside, // 在编辑器旁边打开
+          preview: true, // 启用预览模式
+          preserveFocus: false, // 自动聚焦到新打开的文档上
         });
 
+        //显示信息提示 recap 创建完成
         vscode.window.showInformationMessage(
           `${EXTENSION_NAME}: Recap generated successfully!`
         );
       }
     );
   } catch (error) {
+    // 捕获错误并调用错误处理逻辑
     handleError(error, 'Quick recap');
   }
 }
 
+/**
+ * “项目概览”主流程：
+ * 1. 读取并校验配置
+ * 2. 发送 GET 请求获取项目概览数据
+ * 3. 根据返回的数据生成 Markdown 文档，包含概览内容和统计信息
+ * 4. 在侧边栏显示生成的文档
+ * @returns 
+ */
 async function handleProjectOverview(): Promise<void> {
+  // 读取并校验是否有配置
   const config = getConfig();
   if (!config) {
     return;
   }
 
+  // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
 
   try {
@@ -678,6 +787,15 @@ async function handleProjectOverview(): Promise<void> {
   }
 }
 
+/**
+ * “删除记忆”主流程：
+ * 1. 读取并校验配置
+ * 2. 让用户选择搜索记忆的方式（关键词搜索或查看最近记忆）
+ * 3. 根据选择的方式获取记忆列表，并让用户选择要删除的记忆
+ * 4. 显示删除确认弹窗，若用户确认则发送 DELETE 请求删除记忆
+ * 5. 删除成功后显示提示，并提供查看已删除记忆的链接
+ * @returns 
+ */
 async function handleDeleteMemory(): Promise<void> {
   const config = getConfig();
   if (!config) {
@@ -769,7 +887,7 @@ async function handleDeleteMemory(): Promise<void> {
         // 格式化显示项 - 修复变量名错误
         const pickItems = memories.map((memory, index) => {
           const memoryId = memory.id || memory.memory_id || `memory-${index}`;
-          const dateStr = memory.created_at || memory.createdAt || '';
+          const dateStr = memory.created_at || '';
           const date = dateStr ? new Date(dateStr) : null;
           
           // 提取内容预览
