@@ -6,7 +6,7 @@
  * @author      HPC2H2
  * @version     1.0.0
  * @date        2026-02-14
- * @lastModified 2026-02-14 by HPC2H2
+ * @lastModified 2026-02-15 by HPC2H2
  * 
  * @copyright   Copyright (c) 2026
  * @license     MIT
@@ -26,7 +26,7 @@ interface EvermemConfig {
 
 // 单条记忆（memory）的数据结构
 interface MemoryItem {
-  id: string;
+  id?: string;
   memory_id?: string; // memory的唯一标识
   content: string; // memory的内容
   created_at?: string; // 服务器返回的创建时间
