@@ -33,6 +33,11 @@
         "command": "evermem.deleteMemory",
         "title": "EverMemOS: Delete Memory",
         "category": "EverMemOS"
+      },
+      {
+        "command": "evermem.clearPending",
+        "title": "EverMemOS: Clear Pending Messages",
+        "category": "EverMemOS"
       }
     ],
     "configuration": {

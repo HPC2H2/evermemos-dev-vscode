@@ -72,6 +72,7 @@ const API_PATHS = {
   MEMORIES_SEARCH: ['/api/v1/memories/search', '/api/v0/memories/search', '/api/memories/search', '/memories/search'],
   CONVERSATION_META: ['/api/v1/memories/conversation-meta', '/api/v0/memories/conversation-meta', '/api/memories/conversation-meta', '/memories/conversation-meta'],
   REQUEST_STATUS: ['/api/v1/status/request', '/api/v0/status/request', '/api/status/request', '/status/request'],
+  CLEAR_PENDING: ['/api/v1/memories/clear-pending', '/api/v0/memories/clear-pending', '/api/memories/clear-pending', '/memories/clear-pending'],
   HEALTH: ['/health', '/'],
 } as const;
 
@@ -79,6 +80,14 @@ const API_PATHS = {
 const EXTENSION_NAME = 'EverMemOS';
 // 配置项前缀，也就是setting.json中对应的key
 const EXTENSION_ID = 'evermem';
+
+// 输出通道，便于调试请求/响应
+const outputChannel = vscode.window.createOutputChannel(EXTENSION_NAME);
+function logOutput(message: string, data?: any) {
+  const text = data !== undefined ? `${message} ${JSON.stringify(data, null, 2)}` : message;
+  outputChannel.show(true); // 展示通道但不抢焦点
+  outputChannel.appendLine(text);
+}
 
 // ==================== 辅助函数 ====================
 /**
@@ -523,6 +532,7 @@ async function handleAddMemory(): Promise<void> {
   const groupId = vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined;
 
   try {
+    logOutput(`[${EXTENSION_NAME}] start add memory`);
     // 显示进度条，并尝试连接服务器请求创建记忆
     await vscode.window.withProgress(
       {
@@ -541,8 +551,10 @@ async function handleAddMemory(): Promise<void> {
           content: text,
           group_id: groupId,
           group_name: groupId,
+          role: "user",
           flush: true,
         };
+        logOutput(`[${EXTENSION_NAME}] add payload`, payload);
         
         // 尝试多个版本的路径（优先 v1，再回退）
         const memoryPaths = API_PATHS.MEMORIES;
@@ -571,6 +583,7 @@ async function handleAddMemory(): Promise<void> {
         progress.report({ increment: 70 });
 
         const responseData = response?.data || {};
+        logOutput(`[${EXTENSION_NAME}] add response`, responseData);
         const requestId =
           (responseData as any).request_id ||
           (isApiResponse<any>(responseData) && (responseData as any).data?.request_id) ||
@@ -618,6 +631,7 @@ async function handleQuickRecap(): Promise<void> {
   }
 
   try {
+    logOutput(`[${EXTENSION_NAME}] start search`, { query: query || '(recent)' });
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
@@ -627,7 +641,7 @@ async function handleQuickRecap(): Promise<void> {
       async (progress, token) => {
         progress.report({ increment: 20, message: 'Calling search API...' });
 
-        const searchPayload = {
+        const basePayload = {
           query: query?.trim() || undefined,
           user_id: vscode.env.machineId || undefined,
           group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
@@ -635,25 +649,36 @@ async function handleQuickRecap(): Promise<void> {
           top_k: 20,
         };
 
+        const payloadCandidates = [basePayload];
+        // 若按 group 查不到，再尝试不带 group 兜底
+        if (basePayload.group_id) {
+          payloadCandidates.push({ ...basePayload, group_id: undefined });
+        }
+
         let resp: any;
         let lastErr: any;
-        for (const path of API_PATHS.MEMORIES_SEARCH) {
-          try {
-            resp = await requestWithRetry(() => client.get(path, { params: searchPayload }));
-            lastErr = undefined;
-            break;
-          } catch (err) {
-            lastErr = err;
-            if (axios.isAxiosError(err) && err.response?.status === 404) {
-              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
-              continue;
+        for (const candidate of payloadCandidates) {
+          for (const path of API_PATHS.MEMORIES_SEARCH) {
+            try {
+              resp = await requestWithRetry(() => client.get(path, { params: candidate }));
+              lastErr = undefined;
+              break;
+            } catch (err) {
+              lastErr = err;
+              if (axios.isAxiosError(err) && err.response?.status === 404) {
+                console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+                continue;
+              }
+              throw err;
             }
-            throw err;
           }
+          if (resp) { break; }
         }
         if (!resp && lastErr) {
           throw lastErr;
         }
+
+        const usedPayload = payloadCandidates.find(p => resp?.config?.params && resp.config.params.group_id === p.group_id) || payloadCandidates[0];
 
         if (token.isCancellationRequested) {
           return;
@@ -748,22 +773,32 @@ async function handleProjectOverview(): Promise<void> {
           offset: 0,
         };
 
+        const paramsList = [params];
+        if (params.group_id) {
+          paramsList.push({ ...params, group_id: undefined });
+        }
+
         let resp: any;
         let lastErr: any;
-        for (const path of API_PATHS.MEMORIES) {
-          try {
-            resp = await requestWithRetry(() => client.get(path, { params }));
-            lastErr = undefined;
-            break;
-          } catch (err) {
-            lastErr = err;
-            if (axios.isAxiosError(err) && err.response?.status === 404) {
-              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
-              continue;
+        outer:
+        for (const p of paramsList) {
+          for (const path of API_PATHS.MEMORIES) {
+            try {
+              resp = await requestWithRetry(() => client.get(path, { params: p }));
+              lastErr = undefined;
+              break outer;
+            } catch (err) {
+              lastErr = err;
+              if (axios.isAxiosError(err) && err.response?.status === 404) {
+                console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+                continue;
+              }
+              throw err;
             }
-            throw err;
           }
         }
+
+        const usedParams = paramsList.find(p => resp?.config?.params && resp.config.params.group_id === p.group_id) || paramsList[0];
         if (!resp && lastErr) {
           throw lastErr;
         }
@@ -852,9 +887,13 @@ async function handleDeleteMemory(): Promise<void> {
     let searchTerm: string | undefined;
     const searchPayload: Record<string, any> = {
       user_id: vscode.env.machineId || undefined,
-      group_ids: vscode.workspace.name ? [`vscode-${vscode.workspace.name}`] : undefined,
+      group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
       top_k: 50,
     };
+    const searchPayloads = [searchPayload];
+    if (searchPayload.group_id) {
+      searchPayloads.push({ ...searchPayload, group_id: undefined });
+    }
 
     if (searchMethod.value === 'search') {
       searchTerm = await vscode.window.showInputBox({
@@ -882,19 +921,30 @@ async function handleDeleteMemory(): Promise<void> {
       }
       try {
         let statusResp: any;
+        let lastStatusErr: any;
+        let had404 = false;
         for (const path of API_PATHS.REQUEST_STATUS) {
           try {
             statusResp = await requestWithRetry(() => client.get(path, { params: { request_id: reqId } }));
+            lastStatusErr = undefined;
             break;
           } catch (err) {
+            lastStatusErr = err;
             if (axios.isAxiosError(err) && err.response?.status === 404) {
+              had404 = true;
               console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
               continue;
             }
             throw err;
           }
         }
-        console.log(`[${EXTENSION_NAME}] request status`, statusResp?.data);
+        if (!statusResp && had404) {
+          vscode.window.showInformationMessage(`${EXTENSION_NAME}: request status API not available on this server`);
+        } else {
+          const statusData = statusResp?.data?.data || statusResp?.data || {};
+          const statusText = statusData.status || 'unknown';
+          vscode.window.showInformationMessage(`${EXTENSION_NAME}: request ${reqId} status = ${statusText}`);
+        }
       } catch (err) {
         handleError(err, 'Request status');
         return;
@@ -912,23 +962,34 @@ async function handleDeleteMemory(): Promise<void> {
 
         let resp: any;
         let lastErr: any;
-        for (const path of API_PATHS.MEMORIES_SEARCH) {
-          try {
-            resp = await requestWithRetry(() => client.get(path, { params: searchPayload }));
-            lastErr = undefined;
-            break;
-          } catch (err) {
-            lastErr = err;
-            if (axios.isAxiosError(err) && err.response?.status === 404) {
-              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
-              continue;
+        let usedPayload = searchPayloads[0];
+        outerSearch:
+        for (const candidate of searchPayloads) {
+          for (const path of API_PATHS.MEMORIES_SEARCH) {
+            try {
+              resp = await requestWithRetry(() => client.get(path, { params: candidate }));
+              usedPayload = candidate;
+              lastErr = undefined;
+              break outerSearch;
+            } catch (err) {
+              lastErr = err;
+              if (axios.isAxiosError(err)) {
+                const status = err.response?.status;
+                const data = err.response?.data;
+                logOutput(`[${EXTENSION_NAME}] search error on ${path} (status ${status ?? 'n/a'})`, data);
+                if (status === 404) {
+                  console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+                  continue;
+                }
+              }
+              throw err;
             }
-            throw err;
           }
         }
         if (!resp && lastErr) {
           throw lastErr;
         }
+        logOutput(`[${EXTENSION_NAME}] search used payload`, usedPayload);
 
         if (token.isCancellationRequested) {
           return;
@@ -937,8 +998,10 @@ async function handleDeleteMemory(): Promise<void> {
         progress.report({ increment: 40 });
 
         const responseData = resp?.data || {};
+        logOutput(`[${EXTENSION_NAME}] search response`, responseData);
         const result = (responseData as any).result || (isApiResponse<any>(responseData) ? (responseData as any).data : responseData);
         const rawMemories: any[] = result?.memories || [];
+        const pending: any[] = result?.pending_messages || [];
         const flattened: any[] = [];
         rawMemories.forEach(group => {
           if (group?.episodic_memory && Array.isArray(group.episodic_memory)) {
@@ -951,6 +1014,23 @@ async function handleDeleteMemory(): Promise<void> {
         });
 
         if (!flattened.length) {
+          if (pending.length) {
+            const mdPending = pending
+              .map((p, idx) => `### Pending #${idx + 1}\n- request_id: ${p.request_id || ''}\n- message_id: ${p.message_id || ''}\n- group_id: ${p.group_id || ''}\n- user_id: ${p.user_id || ''}\n- content: ${p.content || ''}\n`)
+              .join('\n');
+            const doc = await vscode.workspace.openTextDocument({
+              content: `# ${EXTENSION_NAME} Pending Messages\n\n${mdPending}`,
+              language: 'markdown',
+            });
+            await vscode.window.showTextDocument(doc, {
+              viewColumn: vscode.ViewColumn.Beside,
+              preview: true,
+              preserveFocus: false,
+            });
+            vscode.window.showInformationMessage(`${EXTENSION_NAME}: No extracted memories yet, ${pending.length} pending messages.`);
+            return;
+          }
+
           const message = searchTerm
             ? `No memories found matching "${searchTerm}"`
             : 'No memories found';
@@ -1075,6 +1155,88 @@ async function handleDeleteMemory(): Promise<void> {
   }
 }
 
+async function handleClearPending(): Promise<void> {
+  const config = getConfig();
+  if (!config) {
+    return;
+  }
+
+  const client = createClient(config);
+  const defaultGroup = vscode.workspace.name ? `vscode-${vscode.workspace.name}` : '';
+
+  const groupId = await vscode.window.showInputBox({
+    prompt: 'Group ID to clear pending (-1/0 -> 1)',
+    placeHolder: 'group_id is required',
+    value: defaultGroup,
+    ignoreFocusOut: true,
+  });
+  if (!groupId) {
+    return;
+  }
+
+  const beforeTime = await vscode.window.showInputBox({
+    prompt: 'Optional: ISO timestamp to only clear records created before this time',
+    placeHolder: 'e.g., 2024-01-01T00:00:00Z (leave empty to clear all)',
+    ignoreFocusOut: true,
+  });
+
+  const confirm = await vscode.window.showWarningMessage(
+    `${EXTENSION_NAME}: Mark pending (-1/0) as used for group ${groupId}${beforeTime ? ` before ${beforeTime}` : ''}?`,
+    { modal: true, detail: 'This will mark pending messages as used (sync_status = 1).' },
+    'Proceed'
+  );
+
+  if (confirm !== 'Proceed') {
+    return;
+  }
+
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `${EXTENSION_NAME}: Clearing pending messages...`,
+        cancellable: false,
+      },
+      async () => {
+        const payload: Record<string, any> = {
+          group_id: groupId.trim(),
+          user_id: vscode.env.machineId || undefined,
+        };
+        if (beforeTime && beforeTime.trim()) {
+          payload['before_time'] = beforeTime.trim();
+        }
+
+        let resp: any;
+        let lastErr: any;
+        for (const path of API_PATHS.CLEAR_PENDING) {
+          try {
+            resp = await requestWithRetry(() => client.post(path, payload));
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            if (axios.isAxiosError(err) && err.response?.status === 404) {
+              console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+              continue;
+            }
+            throw err;
+          }
+        }
+        if (!resp && lastErr) {
+          throw lastErr;
+        }
+
+        vscode.window.showInformationMessage(
+          `${EXTENSION_NAME}: Cleared pending messages for group ${groupId}.`,
+          { modal: false }
+        );
+      }
+    );
+  } catch (error) {
+    handleError(error, 'Clear pending');
+  }
+}
+
 // ==================== 扩展激活 ====================
 export function activate(context: vscode.ExtensionContext) {
   console.log(`[${EXTENSION_NAME}] Extension activated`);
@@ -1084,6 +1246,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.StatusBarAlignment.Right,
     100
   );
+
+  // 将输出通道放入订阅，便于自动释放
+  context.subscriptions.push(outputChannel);
   statusBarItem.text = '$(database) EverMemOS';
   statusBarItem.tooltip = 'Click to check EverMemOS status';
   statusBarItem.command = 'evermem.projectOverview';
@@ -1095,6 +1260,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('evermem.quickRecap', handleQuickRecap),
     vscode.commands.registerCommand('evermem.projectOverview', handleProjectOverview),
     vscode.commands.registerCommand('evermem.deleteMemory', handleDeleteMemory),
+    vscode.commands.registerCommand('evermem.clearPending', handleClearPending),
   ];
 
   commands.forEach(cmd => context.subscriptions.push(cmd));
