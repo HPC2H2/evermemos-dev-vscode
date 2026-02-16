@@ -525,6 +525,21 @@ async function handleAddMemory(): Promise<void> {
     text = input.trim();
   }
 
+  // 可选：追加用户补充文本
+  logOutput(`[${EXTENSION_NAME}] awaiting optional user note input...`);
+  const extraInput = await vscode.window.showInputBox({
+    title: `${EXTENSION_NAME}: 可选补充文本`,
+    prompt: '可留空；若填写，将与选中文本一起提交',
+    placeHolder: '例如：本段代码用于初始化配置',
+    value: '',
+    valueSelection: [0, 0],
+    ignoreFocusOut: true,
+  });
+  logOutput(`[${EXTENSION_NAME}] optional user note input result`, extraInput ?? '(empty)');
+  if (extraInput && extraInput.trim()) {
+    text = `${text}\n\n[User Note]\n${extraInput.trim()}`;
+  }
+
   // 创建 Axios 客户端实例，以向服务器发起请求
   const client = createClient(config);
 
