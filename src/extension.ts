@@ -71,7 +71,7 @@ const API_PATHS = {
   MEMORIES: ['/api/v1/memories', '/api/v0/memories', '/api/memories', '/memories'],
   MEMORIES_SEARCH: ['/api/v1/memories/search', '/api/v0/memories/search', '/api/memories/search', '/memories/search'],
   CONVERSATION_META: ['/api/v1/memories/conversation-meta', '/api/v0/memories/conversation-meta', '/api/memories/conversation-meta', '/memories/conversation-meta'],
-  REQUEST_STATUS: ['/api/v1/status/request', '/api/v0/status/request', '/api/status/request', '/status/request'],
+  REQUEST_STATUS: ['/api/v1/stats/request', '/api/v0/stats/request', '/api/stats/request', '/stats/request'],
   CLEAR_PENDING: ['/api/v1/memories/clear-pending', '/api/v0/memories/clear-pending', '/api/memories/clear-pending', '/memories/clear-pending'],
   HEALTH: ['/health', '/'],
 } as const;
@@ -599,18 +599,37 @@ async function handleAddMemory(): Promise<void> {
 
         const responseData = response?.data || {};
         logOutput(`[${EXTENSION_NAME}] add response`, responseData);
+
+        const isApi = isApiResponse<any>(responseData);
+        const payloadResult = isApi ? (responseData as any).data?.result : (responseData as any).result;
         const requestId =
           (responseData as any).request_id ||
-          (isApiResponse<any>(responseData) && (responseData as any).data?.request_id) ||
+          (isApi ? (responseData as any).data?.request_id : undefined) ||
           'unknown';
+        if (requestId === 'unknown') {
+          logOutput(`[${EXTENSION_NAME}] request_id missing in response`);
+        }
         const statusText =
           (responseData as any).status ||
-          (isApiResponse<any>(responseData) && (responseData as any).data?.status) ||
+          (isApi ? (responseData as any).data?.status : undefined) ||
           'accepted';
+        const statusInfo = payloadResult?.status_info;
+        const count = payloadResult?.count;
+        const messageText = isApi ? (responseData as any).data?.message : (responseData as any).message;
 
-        vscode.window.showInformationMessage(
-          `${EXTENSION_NAME}: Memory request ${statusText}. request_id: ${requestId}`
-        );
+        const isQueued =
+          statusInfo === 'accumulated' ||
+          count === 0 ||
+          (
+            typeof messageText === 'string' &&
+            (/queued/i.test(messageText) || /processing in background/i.test(messageText) || /accepted/i.test(messageText))
+          );
+
+        const tip = isQueued
+          ? `${EXTENSION_NAME}: 已排队等待边界（count=0 或 queued），稍后触发边界才会生成记忆。request_id: ${requestId}`
+          : `${EXTENSION_NAME}: Memory request ${statusText}. request_id: ${requestId}`;
+
+        vscode.window.showInformationMessage(tip);
       }
     );
   } catch (error) {
