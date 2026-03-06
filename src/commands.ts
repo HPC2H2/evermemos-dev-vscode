@@ -7,7 +7,9 @@ import {
   EXTENSION_NAME,
   createClient,
   getConfig,
+  getPreferredApiVersion,
   logOutput,
+  orderPaths,
   requestWithRetry,
   testConnection,
 } from './config';
@@ -131,6 +133,8 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
   }
 
   const client = createClient(config);
+  const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
+  const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
   const userId = vscode.env.machineId || 'vscode-user';
   const groupId = vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined;
 
@@ -159,7 +163,7 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
 
         let response: any;
         let lastError: any;
-        for (const path of API_PATHS.MEMORIES) {
+        for (const path of memoriesPaths) {
           try {
             response = await requestWithRetry(() => client.post(path, payload));
             lastError = undefined;
@@ -224,6 +228,8 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
   }
 
   const client = createClient(config);
+  const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
+  const searchPaths = orderPaths(API_PATHS.MEMORIES_SEARCH, preferredVersion);
   const query = options?.query ??
     (await vscode.window.showInputBox({
       title: `${EXTENSION_NAME}: Search memories`,
@@ -264,28 +270,77 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
 
         let resp: any;
         let lastErr: any;
-        for (const candidate of payloadCandidates) {
-          for (const path of API_PATHS.MEMORIES_SEARCH) {
+        let usedMethod: 'GET' | 'POST' = 'GET';
+        let usedPayload = payloadCandidates[0];
+        const extractCount = (data: any) => {
+          const result = (data as any)?.result || (isApiResponse<any>(data) ? (data as any).data : data) || {};
+          const rawMemories: any[] = result?.memories || [];
+          const flattened: any[] = [];
+          rawMemories.forEach((group) => {
+            if (group?.episodic_memory && Array.isArray(group.episodic_memory)) {
+              flattened.push(...group.episodic_memory);
+            } else if (Array.isArray(group)) {
+              flattened.push(...group);
+            } else if (group) {
+              flattened.push(group);
+            }
+          });
+          return flattened.length;
+        };
+
+        outerSearchAll: for (const candidate of payloadCandidates) {
+          resp = undefined;
+          lastErr = undefined;
+
+          // GET first
+          for (const path of searchPaths) {
             try {
-              resp = await requestWithRetry(() => client.get(path, { params: candidate }));
-              lastErr = undefined;
-              break;
+              const r = await requestWithRetry(() => client.get(path, { params: candidate }));
+              const count = extractCount(r?.data);
+              resp = r;
+              usedMethod = 'GET';
+              usedPayload = candidate;
+              if (count > 0) {
+                break outerSearchAll;
+              }
+              break; // got a response, stop trying other paths for this candidate
             } catch (err) {
               lastErr = err;
               if (axios.isAxiosError(err) && err.response?.status === 404) {
-                console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+                console.warn(`[${EXTENSION_NAME}] ${path} (GET) not found, trying next path...`);
                 continue;
               }
-              throw err;
+              // other errors -> try next candidate or POST
             }
           }
-          if (resp) {
-            break;
+
+          if (!resp) {
+            for (const path of searchPaths) {
+              try {
+                const r = await requestWithRetry(() => client.post(path, candidate));
+                const count = extractCount(r?.data);
+                resp = r;
+                usedMethod = 'POST';
+                usedPayload = candidate;
+                if (count > 0) {
+                  break outerSearchAll;
+                }
+                break; // got a response, stop trying other paths for this candidate
+              } catch (err) {
+                lastErr = err;
+                if (axios.isAxiosError(err) && err.response?.status === 404) {
+                  console.warn(`[${EXTENSION_NAME}] ${path} (POST) not found, trying next path...`);
+                  continue;
+                }
+                throw err;
+              }
+            }
           }
         }
         if (!resp && lastErr) {
           throw lastErr;
         }
+        logOutput(`[${EXTENSION_NAME}] search used`, { method: usedMethod, payload: usedPayload });
 
         if (token.isCancellationRequested) {
           return;
@@ -357,6 +412,8 @@ export async function handleProjectOverview(options?: { pageSize?: number; openD
   }
 
   const client = createClient(config);
+  const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
+  const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
 
   try {
     let summaryMessage = `${EXTENSION_NAME}: Memories overview loaded.`;
@@ -387,7 +444,7 @@ export async function handleProjectOverview(options?: { pageSize?: number; openD
         let resp: any;
         let lastErr: any;
         outer: for (const p of paramsList) {
-          for (const path of API_PATHS.MEMORIES) {
+          for (const path of memoriesPaths) {
             try {
               resp = await requestWithRetry(() => client.get(path, { params: p }));
               lastErr = undefined;
@@ -429,7 +486,7 @@ export async function handleProjectOverview(options?: { pageSize?: number; openD
         md += '\n## Latest items\n';
 
         memories.forEach((m, idx) => {
-          md += `### #${idx + 1}\n- user_id: ${m.user_id || ''}\n- group_id: ${m.group_id || ''}\n- type: ${m.memory_type || ''}\n- timestamp: ${m.timestamp || ''}\n- summary/content: ${m.summary || m.content || ''}\n\n`;
+          md += `### #${idx + 1}\n- user_id: ${m.user_id || ''}\n- group_id: ${m.group_id || ''}\n- request_id: ${m.request_id || m.message_id || ''}\n- type: ${m.memory_type || ''}\n- timestamp: ${m.timestamp || ''}\n- summary/content: ${m.summary || m.content || ''}\n\n`;
         });
 
         summaryMessage = `${EXTENSION_NAME}: 概览完成，${memories.length} 条，Total ${total}`;
@@ -464,6 +521,9 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
   }
 
   const client = createClient(config);
+  const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
+  const searchPaths = orderPaths(API_PATHS.MEMORIES_SEARCH, preferredVersion);
+  const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
   let result: ActionResult = { ok: false, message: '已取消' };
 
   try {
@@ -487,11 +547,13 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
     const searchPayload: Record<string, any> = {
       user_id: vscode.env.machineId || undefined,
       group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
+      group_ids: vscode.workspace.name ? [`vscode-${vscode.workspace.name}`] : undefined,
       top_k: 50,
+      include_metadata: true,
     };
     const searchPayloads = [searchPayload];
     if (searchPayload.group_id) {
-      searchPayloads.push({ ...searchPayload, group_id: undefined });
+      searchPayloads.push({ ...searchPayload, group_id: undefined, group_ids: undefined });
     }
 
     if (searchMethod.value === 'search') {
@@ -536,6 +598,9 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
             throw err;
           }
         }
+        if (!statusResp && lastStatusErr) {
+          throw lastStatusErr;
+        }
         if (!statusResp && had404) {
           vscode.window.showInformationMessage(`${EXTENSION_NAME}: request status API not available on this server`);
         } else {
@@ -561,32 +626,92 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
         let resp: any;
         let lastErr: any;
         let usedPayload = searchPayloads[0];
+        let usedMethod: 'GET' | 'POST' = 'GET';
+        const extractCounts = (data: any) => {
+          const responseData = data || {};
+          const resultData =
+            (responseData as any).result || (isApiResponse<any>(responseData) ? (responseData as any).data : responseData);
+          const rawMemories: any[] = resultData?.memories || [];
+          const pending: any[] = resultData?.pending_messages || [];
+          const flattened: any[] = [];
+          rawMemories.forEach((group) => {
+            if (group?.episodic_memory && Array.isArray(group.episodic_memory)) {
+              flattened.push(...group.episodic_memory);
+            } else if (Array.isArray(group)) {
+              flattened.push(...group);
+            } else if (group) {
+              flattened.push(group);
+            }
+          });
+          return { count: flattened.length, pendingCount: Array.isArray(pending) ? pending.length : 0 };
+        };
+
         outerSearch: for (const candidate of searchPayloads) {
-          for (const path of API_PATHS.MEMORIES_SEARCH) {
+          resp = undefined;
+          lastErr = undefined;
+
+          // GET first
+          for (const path of searchPaths) {
             try {
-              resp = await requestWithRetry(() => client.get(path, { params: candidate }));
+              const r = await requestWithRetry(() => client.get(path, { params: candidate }));
+              const { count, pendingCount } = extractCounts(r?.data);
+              resp = r;
               usedPayload = candidate;
-              lastErr = undefined;
-              break outerSearch;
+              usedMethod = 'GET';
+              if (count > 0 || pendingCount > 0) {
+                break outerSearch;
+              }
+              break; // got a response, stop trying other paths for this candidate
             } catch (err) {
               lastErr = err;
               if (axios.isAxiosError(err)) {
                 const status = err.response?.status;
                 const data = err.response?.data;
-                logOutput(`[${EXTENSION_NAME}] search error on ${path} (status ${status ?? 'n/a'})`, data);
+                logOutput(`[${EXTENSION_NAME}] search error on ${path} (GET, status ${status ?? 'n/a'})`, data);
                 if (status === 404) {
                   console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
                   continue;
                 }
               }
-              throw err;
+            }
+          }
+
+          if (!resp) {
+            for (const path of searchPaths) {
+              try {
+                const r = await requestWithRetry(() => client.post(path, candidate));
+                const { count, pendingCount } = extractCounts(r?.data);
+                resp = r;
+                usedPayload = candidate;
+                usedMethod = 'POST';
+                if (count > 0 || pendingCount > 0) {
+                  break outerSearch;
+                }
+                break; // got a response, stop trying other paths for this candidate
+              } catch (err) {
+                lastErr = err;
+                if (axios.isAxiosError(err)) {
+                  const status = err.response?.status;
+                  const data = err.response?.data;
+                  logOutput(`[${EXTENSION_NAME}] search error on ${path} (POST, status ${status ?? 'n/a'})`, data);
+                  if (status === 404) {
+                    console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
+                    continue;
+                  }
+                }
+                throw err;
+              }
             }
           }
         }
         if (!resp && lastErr) {
           throw lastErr;
         }
-        logOutput(`[${EXTENSION_NAME}] search used payload`, usedPayload);
+        if (!resp) {
+          result = { ok: false, message: 'No response from search' };
+          return;
+        }
+        logOutput(`[${EXTENSION_NAME}] search used payload`, { usedPayload, method: usedMethod });
 
         if (token.isCancellationRequested) {
           result = { ok: false, message: '已取消' };
@@ -637,6 +762,12 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
           const message = searchTerm ? `No memories found matching "${searchTerm}"` : 'No memories found';
           vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${message}`);
           result = { ok: false, message };
+          return;
+        }
+
+        if (!resp) {
+          result = { ok: false, message: 'No response from search' };
+          vscode.window.showWarningMessage(`${EXTENSION_NAME}: No response from search API.`);
           return;
         }
 
@@ -720,26 +851,55 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
             async () => {
               let deleteResp: any;
               let delErr: any;
-              for (const path of API_PATHS.MEMORIES) {
-                try {
-                  const body = {
-                    event_id: memoryId,
-                    user_id: vscode.env.machineId || undefined,
-                    group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
-                  };
-                  deleteResp = await requestWithRetry(() => client.delete(path, { data: body }));
-                  delErr = undefined;
-                  break;
-                } catch (err) {
-                  delErr = err;
-                  if (axios.isAxiosError(err) && err.response?.status === 404) {
-                    console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
-                    continue;
+              const body = {
+                event_id: memoryId,
+                user_id: vscode.env.machineId || undefined,
+                group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
+              };
+              const logAttempt = (method: string, path: string, note?: string) =>
+                logOutput(`[${EXTENSION_NAME}] delete attempt ${method} ${path}${note ? ` (${note})` : ''}`);
+
+              // Official: DELETE /api/v0/memories with body (preferred), fallback to query params
+              if (!deleteResp) {
+                for (const path of memoriesPaths) {
+                  logAttempt('DELETE', path, 'body');
+                  try {
+                    deleteResp = await requestWithRetry(() => client.delete(path, { data: body }));
+                    delErr = undefined;
+                    break;
+                  } catch (err) {
+                    delErr = err;
+                    if (axios.isAxiosError(err) && err.response?.status === 404) {
+                      console.warn(`[${EXTENSION_NAME}] ${path} (body) not found, trying query...`);
+                      continue;
+                    }
                   }
-                  throw err;
                 }
               }
+
+              if (!deleteResp) {
+                for (const path of memoriesPaths) {
+                  logAttempt('DELETE', `${path}?event_id=${memoryId}`, 'query');
+                  try {
+                    deleteResp = await requestWithRetry(() => client.delete(path, { params: body }));
+                    delErr = undefined;
+                    break;
+                  } catch (err) {
+                    delErr = err;
+                    if (axios.isAxiosError(err) && err.response?.status === 404) {
+                      console.warn(`[${EXTENSION_NAME}] ${path} (query) not found, stopping...`);
+                      continue;
+                    }
+                  }
+                }
+              }
+
               if (!deleteResp && delErr) {
+                if (axios.isAxiosError(delErr) && delErr.response?.status === 404) {
+                  vscode.window.showWarningMessage(
+                    `${EXTENSION_NAME}: 删除接口不可用，云端可能未开放删除，请检查服务器版本或配置。`
+                  );
+                }
                 throw delErr;
               }
             }

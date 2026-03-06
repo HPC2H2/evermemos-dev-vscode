@@ -4,6 +4,13 @@
 
 将 EverMem Cloud 直接接入 VS Code：保存/搜索/概览记忆，一键侧边栏操作，命令面板亦可用。
 
+## 本版变更（官方云端兼容）
+- 路径按配置自动优先：默认云端 `/api/v0/...`，若 `apiBaseUrl` 带 `/api/v1` 则优先 `/api/v1/...`（仍保留 v0 兜底）。
+- 仅保留官方接口集：POST/GET/DELETE `/api/{v0|v1}/memories`，GET `/api/{v0|v1}/memories/search`。
+- 侧边栏新增 Auth Token 输入（自托管/旧版可用），Key/Token 都支持。
+- 搜索/删除 `user_id` 自动填入，`group_id` 可选（来自工作区名）。
+- 项目概览展示 `request_id`，方便配合删除/状态查询。
+
 ## 功能速览
 - 侧边栏卡片式 UI：填 Key、测试连接、保存记忆、搜索/回顾、项目概览、删除记忆、日志回显。
 - 选区/整文件/自定义文本入库，支持备注。
@@ -68,6 +75,13 @@ npm test
 [中文版本](#evermemos-vs-code-插件云端版)
 
 Bring EverMem Cloud into VS Code: save/search/overview memories from the sidebar or Command Palette.
+
+## What’s new (cloud-compatible)
+- Path preference honors config: default to `/api/v0/...`; if `apiBaseUrl` ends with `/api/v1`, v1 paths are tried first (v0 kept as fallback).
+- Only official endpoints kept: POST/GET/DELETE `/api/{v0|v1}/memories`, GET `/api/{v0|v1}/memories/search`.
+- Sidebar now accepts Auth Token (self-hosted/legacy); API Key or Token both supported.
+- `user_id` auto-filled; `group_id` optional (derived from workspace name).
+- Project Overview shows `request_id` to pair with delete/status checks.
 
 ## Features
 - Card-style sidebar: set API, test connection, save memory, search/recap, project overview, delete, and recent logs.

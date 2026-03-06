@@ -31,12 +31,38 @@ export type SidebarActionPayload =
 
 export const DEFAULT_API_BASE_URL = 'https://api.evermind.ai';
 export const API_PATHS = {
-  MEMORIES: ['/api/v0/memories', '/api/memories', '/memories'],
-  MEMORIES_SEARCH: ['/api/v0/memories/search', '/api/memories/search', '/memories/search'],
-  CONVERSATION_META: ['/api/v0/memories/conversation-meta', '/api/memories/conversation-meta', '/memories/conversation-meta'],
+  // Cloud default v0; include v1 for local/self-hosted
+  MEMORIES: ['/api/v0/memories', '/api/v1/memories'],
+  MEMORIES_SEARCH: ['/api/v0/memories/search', '/api/v1/memories/search'],
+  MEMORIES_DELETE: ['/api/v0/memories', '/api/v1/memories'],
+  CONVERSATION_META: ['/api/v0/memories/conversation-meta', '/api/v1/memories/conversation-meta'],
   REQUEST_STATUS: ['/api/v1/stats/request', '/api/v0/stats/request', '/api/stats/request', '/stats/request'],
-  HEALTH: ['/health', '/'],
+  HEALTH: ['/api/health', '/health', '/'],
 } as const;
+
+const isV1Path = (p: string) => /\/api\/v1\//i.test(p) || /\/v1$/i.test(p);
+const isV0Path = (p: string) => /\/api\/v0\//i.test(p) || /\/v0$/i.test(p);
+export function getPreferredApiVersion(apiBaseUrl: string): 'v0' | 'v1' {
+  const match = apiBaseUrl?.match(/\/api\/(v\d+)/i);
+  if (match && match[1]?.toLowerCase() === 'v1') {
+    return 'v1';
+  }
+  return 'v0';
+}
+export function orderPaths(paths: readonly string[], preferred: 'v0' | 'v1') {
+  const scored = paths.map((p) => {
+    const score = preferred === 'v1' ? (isV1Path(p) ? 0 : isV0Path(p) ? 1 : 2) : isV0Path(p) ? 0 : isV1Path(p) ? 1 : 2;
+    return { p, score };
+  });
+  scored.sort((a, b) => a.score - b.score);
+  const unique: string[] = [];
+  scored.forEach(({ p }) => {
+    if (!unique.includes(p)) {
+      unique.push(p);
+    }
+  });
+  return unique;
+}
 
 export const EXTENSION_NAME = 'EverMemOS';
 export const EXTENSION_ID = 'evermem';
@@ -44,7 +70,6 @@ export const outputChannel = vscode.window.createOutputChannel(EXTENSION_NAME);
 
 export function logOutput(message: string, data?: any) {
   const text = data !== undefined ? `${message} ${JSON.stringify(data, null, 2)}` : message;
-  outputChannel.show(true);
   outputChannel.appendLine(text);
 }
 
@@ -195,7 +220,9 @@ export function getConfig(): EvermemConfig | null {
 
 export async function testConnection(config: EvermemConfig): Promise<boolean> {
   const client = createClient(config);
-  for (const path of API_PATHS.HEALTH) {
+  const preferred = getPreferredApiVersion(config.apiBaseUrl);
+  const healthPaths = orderPaths(API_PATHS.HEALTH, preferred);
+  for (const path of healthPaths) {
     try {
       const response = await requestWithRetry<AxiosResponse>(() => client.get(path, { timeout: 5000 }));
       if (response.status < 500) {

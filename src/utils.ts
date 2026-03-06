@@ -69,7 +69,7 @@ export function getCurrentSelectionOrFile():
   };
   const meta = {
     source: 'vscode-extension',
-    extension_version: '0.0.1',
+    extension_version: '0.1.0',
     captured_at: new Date().toISOString(),
     file_info: fileInfo,
     context: {

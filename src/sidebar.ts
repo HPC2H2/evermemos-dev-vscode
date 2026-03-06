@@ -18,7 +18,9 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewId = 'evermem.configView';
   private view?: vscode.WebviewView;
 
-  constructor(private readonly context: vscode.ExtensionContext, private readonly actions: SidebarActions) {}
+  constructor(private readonly _context: vscode.ExtensionContext, private readonly actions: SidebarActions) {
+    void this._context;
+  }
 
   public postMessage(message: any) {
     this.view?.webview.postMessage(message);
@@ -34,6 +36,7 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
     const initial = {
       apiBaseUrl: config.get<string>('apiBaseUrl') || DEFAULT_API_BASE_URL,
       apiKey: config.get<string>('apiKey') || '',
+      authToken: config.get<string>('authToken') || '',
       workspace: vscode.workspace.name || 'Workspace',
     };
     const locale = (vscode.env.language || 'en').toLowerCase();
@@ -52,6 +55,7 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
         const cfg = vscode.workspace.getConfiguration('evermem');
         await cfg.update('apiBaseUrl', payload.apiBaseUrl || DEFAULT_API_BASE_URL, true);
         await cfg.update('apiKey', payload.apiKey || '', true);
+        await cfg.update('authToken', payload.authToken || '', true);
         vscode.window.showInformationMessage(text.toastConfigSaved);
         this.postMessage({ type: 'toast', level: 'success', message: text.toastConfigSaved });
         return;
@@ -116,9 +120,11 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
         apiBaseLabel: 'API Base URL',
         apiKeyLabel: 'API Key（console.evermind.ai 获取，例如 46b7d3f9-199a-4665-ad1c-6495e1945fd7）',
         apiKeyPlaceholder: '粘贴你的 EverMem API Key',
+        authTokenLabel: 'Auth Token（可选，用于自托管或旧版）',
+        authTokenPlaceholder: '可选：粘贴自托管 Token',
         save: '保存',
         openSettings: '打开设置',
-        envHint: '支持环境变量 EVERMEM_API_KEY，默认指向云端 https://api.evermind.ai',
+        envHint: '支持 EVERMEM_API_KEY（云 v0），本地自托管可用 Token；默认指向 https://api.evermind.ai',
         quickOps: '快速操作',
         quickOpsHint: '使用选区或自定义文本',
         memoryLabel: '添加记忆（留空则使用当前文件/选区）',
@@ -159,9 +165,11 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
       apiBaseLabel: 'API Base URL',
       apiKeyLabel: 'API Key (from console.evermind.ai, e.g. 46b7d3f9-199a-4665-ad1c-6495e1945fd7)',
       apiKeyPlaceholder: 'Paste your EverMem API Key',
+      authTokenLabel: 'Auth Token (optional, self-hosted/legacy)',
+      authTokenPlaceholder: 'Optional: paste self-hosted token',
       save: 'Save',
       openSettings: 'Open Settings',
-      envHint: 'Env var EVERMEM_API_KEY is supported; default points to https://api.evermind.ai',
+      envHint: 'Supports EVERMEM_API_KEY (cloud v0); self-hosted can use auth token. Default https://api.evermind.ai',
       quickOps: 'Quick Actions',
       quickOpsHint: 'Use selection or custom text',
       memoryLabel: 'Save memory (blank uses current file/selection)',
@@ -192,7 +200,7 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
     };
   }
 
-  private getHtml(webview: vscode.Webview, initial: Record<string, string>, text: ReturnType<typeof this.getStrings>): string {
+  private getHtml(_webview: vscode.Webview, initial: Record<string, string>, text: ReturnType<typeof this.getStrings>): string {
     const style = `
       :root { color-scheme: light dark; }
       body { font-family: var(--vscode-font-family); padding: 14px; background: var(--vscode-sideBar-background); color: var(--vscode-foreground); }
@@ -237,6 +245,8 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
       qs('apiBaseLabel').textContent = t.apiBaseLabel;
       qs('apiKeyLabel').textContent = t.apiKeyLabel;
       qs('apiKey').placeholder = t.apiKeyPlaceholder;
+      qs('authTokenLabel').textContent = t.authTokenLabel;
+      qs('authToken').placeholder = t.authTokenPlaceholder;
       qs('saveBtn').textContent = t.save;
       qs('openSettings').textContent = t.openSettings;
       qs('envHint').textContent = t.envHint;
@@ -259,10 +269,11 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
       const initialBase = '${initial.apiBaseUrl.replace(/'/g, "&#39;")}';
       qs('apiBaseUrl').value = initialBase;
       qs('apiKey').value = '${(initial.apiKey || '').replace(/'/g, "&#39;")}';
+      qs('authToken').value = '${(initial.authToken || '').replace(/'/g, "&#39;")}';
       push('info', t.welcome);
 
       qs('saveBtn').addEventListener('click', () => {
-        vscodeApi.postMessage({ type: 'saveConfig', data: { apiBaseUrl: qs('apiBaseUrl').value.trim(), apiKey: qs('apiKey').value.trim() } });
+        vscodeApi.postMessage({ type: 'saveConfig', data: { apiBaseUrl: qs('apiBaseUrl').value.trim(), apiKey: qs('apiKey').value.trim(), authToken: qs('authToken').value.trim() } });
       });
       qs('openSettings').addEventListener('click', () => { vscodeApi.postMessage({ type: 'openSettings' }); });
       qs('testBtn').addEventListener('click', () => { vscodeApi.postMessage({ type: 'action', action: 'testConnection' }); });
@@ -307,6 +318,8 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
         <input id="apiKey" type="password" placeholder="${text.apiKeyPlaceholder}" />
         <button id="saveBtn">${text.save}</button>
       </div>
+      <label id="authTokenLabel" for="authToken" style="margin-top:6px;">${text.authTokenLabel}</label>
+      <input id="authToken" type="password" placeholder="${text.authTokenPlaceholder}" />
       <div class="row" style="margin-top:6px; justify-content: space-between;">
         <button class="secondary" id="openSettings">${text.openSettings}</button>
       </div>
