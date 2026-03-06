@@ -1,71 +1,127 @@
-# evermemos-dev-vscode README
+# EverMemOS VS Code 插件（云端版）
 
-This is the README for your extension "evermemos-dev-vscode". After writing up a brief description, we recommend including the following sections.
+[English version](#evermemos-vs-code-extension-cloud) | [中文](#evermemos-vs-code-插件云端版)
 
-## Features
+将 EverMem Cloud 直接接入 VS Code：保存/搜索/概览记忆，一键侧边栏操作，命令面板亦可用。
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+## 功能速览
+- 侧边栏卡片式 UI：填 Key、测试连接、保存记忆、搜索/回顾、项目概览、删除记忆、日志回显。
+- 选区/整文件/自定义文本入库，支持备注。
+- 云端自动摘要与回顾（由 EverMemOS Cloud 处理）。
+- 命令面板快捷：Add Memory / Quick Recap / Project Overview / Delete Memory / Open Sidebar。
 
-For example if there is an image subfolder under your extension project workspace:
+## 安装与运行
+```bash
+npm install
+npm run compile
+```
+本地调试：在 VS Code 中按 `F5` 启动 Extension Development Host，新窗口侧边栏打开 EverMemOS。
 
-\!\[feature X\]\(images/feature-x.png\)
+## 配置 API Key
+1) GUI：设置中搜索 `evermem.apiKey`（或在侧边栏 Cloud API 卡片直接填写/保存），`evermem.apiBaseUrl` 默认 `https://api.evermind.ai`。
+2) 环境变量（可选）：`export EVERMEM_API_KEY="<你的APIKey>"` 后从同一终端启动 VS Code。
+API Key 在 [console.evermind.ai](https://console.evermind.ai) 获取（示例：`111111f9-199a-4665-ad1c-111111111111`）。
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## 侧边栏使用（推荐路径）
+1. 点「测试连接」确认联通。
+2. 「保存记忆」：默认取当前选区/文件；若在表单输入文本则以表单为准，可附加备注。
+3. 「搜索/快速回顾」：输入关键词（留空返回最近记忆），结果以 Markdown 打开。
+4. 「项目概览」：输出当前工作区的记忆概览。
+5. 「删除记忆」：按提示选择并删除。
+6. 「状态/日志」：查看最近 12 条操作反馈。
 
-## Requirements
+## 命令面板（Command Palette）
+- EverMemOS: Add Memory
+- EverMemOS: Quick Recap
+- EverMemOS: Project Overview
+- EverMemOS: Delete Memory
+- EverMemOS: Open Sidebar
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+## 配置项
+- `evermem.apiBaseUrl`：默认 `https://api.evermind.ai`
+- `evermem.apiKey`：云端 API Key，支持 `EVERMEM_API_KEY`
+- `evermem.authToken`：旧版自托管 Token（有 apiKey 时可留空）
 
-## Extension Settings
+## 测试
+```bash
+npm test
+```
+覆盖：`safeTruncate` 截断、`requestWithRetry` 网络重试、`createClient` 去尾 `/api` 与授权头、`getConfig` 设置+环境变量读取。
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+## 故障排查
+- 401/403：Key 无效/过期，重新在 console.evermind.ai 获取。
+- 连接失败：检查网络/防火墙，确认 `apiBaseUrl` 可访问，重测连接。
+- 空结果：刚写入需排队；留空关键词可列最近记忆。
+- 删除失败/404：目标部署可能未开放删除接口，稍后重试或查云端文档。
 
-For example:
+## 参考
+- 云端文档：<https://docs.evermind.ai>
+- 后端源码：<https://github.com/EverMind-AI/EverMemOS>
+- 官方示例：<https://github.com/EverMind-AI/evermem-claude-code>
 
-This extension contributes the following settings:
-
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
-
-## Known Issues
-
-Calling out known issues can help limit users opening duplicate issues against your extension.
-
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
+遇到问题可查看侧边栏日志并反馈。祝使用顺利！
 
 ---
 
-## Following extension guidelines
+# EverMemOS VS Code Extension (Cloud)
 
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
+[中文版本](#evermemos-vs-code-插件云端版)
 
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
+Bring EverMem Cloud into VS Code: save/search/overview memories from the sidebar or Command Palette.
 
-## Working with Markdown
+## Features
+- Card-style sidebar: set API, test connection, save memory, search/recap, project overview, delete, and recent logs.
+- Save selection/whole file/custom text with optional note.
+- Cloud-side summarization/recap handled by EverMemOS Cloud.
+- Command Palette shortcuts: Add Memory / Quick Recap / Project Overview / Delete Memory / Open Sidebar.
 
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
+## Install & Run
+```bash
+npm install
+npm run compile
+```
+Debug locally: press `F5` in VS Code to launch an Extension Development Host, then open the EverMemOS sidebar there.
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
+## Configure API Key
+1) GUI: search `evermem.apiKey` in Settings (or fill/save in the Cloud API card). `evermem.apiBaseUrl` defaults to `https://api.evermind.ai`.
+2) Env var (optional): `export EVERMEM_API_KEY="<your API key>"` before launching VS Code from the same shell.
+Get your key from [console.evermind.ai](https://console.evermind.ai) (example: `111111f9-199a-4665-ad1c-111111111111`).
 
-## For more information
+## Sidebar Flow (recommended)
+1. Click **Test Connection**.
+2. **Save Memory**: uses current selection/file by default; text entered in the form overrides it; note is optional.
+3. **Search / Quick Recap**: enter keywords (blank returns recent memories); result opens as Markdown.
+4. **Project Overview**: get workspace-level summary.
+5. **Delete Memory**: follow prompts to remove entries.
+6. **Status / Logs**: last 12 actions.
 
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
+## Commands (Command Palette)
+- EverMemOS: Add Memory
+- EverMemOS: Quick Recap
+- EverMemOS: Project Overview
+- EverMemOS: Delete Memory
+- EverMemOS: Open Sidebar
 
-**Enjoy!**
+## Settings
+- `evermem.apiBaseUrl`: default `https://api.evermind.ai`
+- `evermem.apiKey`: cloud API key, supports `EVERMEM_API_KEY`
+- `evermem.authToken`: legacy self-hosted token (leave empty if apiKey is set)
+
+## Tests
+```bash
+npm test
+```
+Covers: `safeTruncate`, `requestWithRetry` (network retry), `createClient` (trim `/api` + auth header), `getConfig` (settings + env).
+
+## Troubleshooting
+- 401/403: key invalid/expired; fetch a new one from console.evermind.ai.
+- Cannot connect: network/firewall or wrong `apiBaseUrl`; retest connection.
+- Empty results: recent writes may be pending; try blank keyword to list recent memories.
+- Delete fails/404: target deployment may not expose delete; retry later or check cloud docs.
+
+## References
+- Cloud docs: <https://docs.evermind.ai>
+- Backend repo: <https://github.com/EverMind-AI/EverMemOS>
+- Official sample: <https://github.com/EverMind-AI/evermem-claude-code>
+
+Check the sidebar logs for recent events if anything looks off. Enjoy!
