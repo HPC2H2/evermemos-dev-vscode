@@ -36,8 +36,11 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
       apiKey: config.get<string>('apiKey') || '',
       workspace: vscode.workspace.name || 'Workspace',
     };
+    const locale = (vscode.env.language || 'en').toLowerCase();
+    const isZh = locale.startsWith('zh');
+    const text = this.getStrings(isZh);
 
-    webviewView.webview.html = this.getHtml(webviewView.webview, initial);
+    webviewView.webview.html = this.getHtml(webviewView.webview, initial, text);
 
     webviewView.webview.onDidReceiveMessage(async (msg: SidebarActionPayload | any) => {
       if (!msg?.type) {
@@ -49,8 +52,8 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
         const cfg = vscode.workspace.getConfiguration('evermem');
         await cfg.update('apiBaseUrl', payload.apiBaseUrl || DEFAULT_API_BASE_URL, true);
         await cfg.update('apiKey', payload.apiKey || '', true);
-        vscode.window.showInformationMessage('EverMemOS 配置已保存');
-        this.postMessage({ type: 'toast', level: 'success', message: '配置已保存' });
+        vscode.window.showInformationMessage(text.toastConfigSaved);
+        this.postMessage({ type: 'toast', level: 'success', message: text.toastConfigSaved });
         return;
       }
 
@@ -65,9 +68,7 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
           if (action === 'testConnection') {
             const ok = await this.actions.testConnection();
             this.postMessage({ type: 'connection', ok });
-            vscode.window.showInformationMessage(
-              ok ? `${EXTENSION_NAME}: Cloud API 可用` : `${EXTENSION_NAME}: 无法连接 Cloud API`
-            );
+            vscode.window.showInformationMessage(ok ? text.connectionOk : text.connectionFail);
             return;
           }
           if (action === 'addMemory') {
@@ -76,33 +77,122 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
               note: msg.payload?.note,
               useSelection: msg.payload?.useSelection !== false,
             });
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || '记忆已提交' });
+            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.addMemoryDone });
             return;
           }
           if (action === 'quickRecap') {
             const res = await this.actions.quickRecap({ query: msg.payload?.query, openDocument: true });
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || '已完成搜索/回顾' });
+            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.quickRecapDone });
             return;
           }
           if (action === 'projectOverview') {
             const res = await this.actions.projectOverview({ openDocument: true });
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || '项目概览已生成' });
+            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.overviewDone });
             return;
           }
           if (action === 'deleteMemory') {
             const res = await this.actions.deleteMemory();
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || '删除流程完成' });
+            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.deleteDone });
             return;
           }
         } catch (error) {
           vscode.window.showErrorMessage(`${EXTENSION_NAME}: ${action} failed`);
-          this.postMessage({ type: 'actionResult', action, ok: false, message: (error as Error)?.message || '操作失败' });
+          this.postMessage({ type: 'actionResult', action, ok: false, message: (error as Error)?.message || text.actionFailed });
         }
       }
     });
   }
 
-  private getHtml(webview: vscode.Webview, initial: Record<string, string>): string {
+  private getStrings(isZh: boolean) {
+    if (isZh) {
+      return {
+        lang: 'zh-CN',
+        heroSubtitle: '云端记忆捕获 · 快捷搜索 · 项目概览',
+        statusPending: '待检测',
+        statusOk: '已连接',
+        statusFail: '未连接',
+        apiCard: 'Cloud API',
+        testConnection: '测试连接',
+        apiBaseLabel: 'API Base URL',
+        apiKeyLabel: 'API Key（console.evermind.ai 获取，例如 46b7d3f9-199a-4665-ad1c-6495e1945fd7）',
+        apiKeyPlaceholder: '粘贴你的 EverMem API Key',
+        save: '保存',
+        openSettings: '打开设置',
+        envHint: '支持环境变量 EVERMEM_API_KEY，默认指向云端 https://api.evermind.ai',
+        quickOps: '快速操作',
+        quickOpsHint: '使用选区或自定义文本',
+        memoryLabel: '添加记忆（留空则使用当前文件/选区）',
+        memoryPlaceholder: '可选：直接在此粘贴要保存的内容',
+        noteLabel: '可选备注',
+        notePlaceholder: '例如：这段代码初始化了配置',
+        useSelection: '优先使用当前选区/文件',
+        saveMemory: '保存记忆',
+        searchLabel: '搜索 / 快速回顾',
+        searchPlaceholder: '输入关键词，留空查看最近记忆',
+        search: '搜索',
+        overview: '项目概览',
+        delete: '删除记忆',
+        logTitle: '状态 / 日志',
+        logHint: '最近 12 条',
+        welcome: '欢迎使用 EverMemOS Cloud',
+        toastConfigSaved: '配置已保存',
+        connectionOk: `${EXTENSION_NAME}: Cloud API 可用`,
+        connectionFail: `${EXTENSION_NAME}: 无法连接 Cloud API`,
+        addMemoryDone: '记忆已提交',
+        quickRecapDone: '已完成搜索/回顾',
+        overviewDone: '项目概览已生成',
+        deleteDone: '删除流程完成',
+        actionFailed: '操作失败',
+        toastDefault: '完成',
+        heroEyebrow: 'EverMem Cloud',
+        heroTitle: 'EverMemOS',
+      };
+    }
+    return {
+      lang: 'en',
+      heroSubtitle: 'Cloud memory capture · Quick search · Project overview',
+      statusPending: 'Pending',
+      statusOk: 'Connected',
+      statusFail: 'Offline',
+      apiCard: 'Cloud API',
+      testConnection: 'Test Connection',
+      apiBaseLabel: 'API Base URL',
+      apiKeyLabel: 'API Key (from console.evermind.ai, e.g. 46b7d3f9-199a-4665-ad1c-6495e1945fd7)',
+      apiKeyPlaceholder: 'Paste your EverMem API Key',
+      save: 'Save',
+      openSettings: 'Open Settings',
+      envHint: 'Env var EVERMEM_API_KEY is supported; default points to https://api.evermind.ai',
+      quickOps: 'Quick Actions',
+      quickOpsHint: 'Use selection or custom text',
+      memoryLabel: 'Save memory (blank uses current file/selection)',
+      memoryPlaceholder: 'Optional: paste content to store',
+      noteLabel: 'Optional note',
+      notePlaceholder: 'e.g., This code initializes config',
+      useSelection: 'Prefer current selection/file',
+      saveMemory: 'Save Memory',
+      searchLabel: 'Search / Quick Recap',
+      searchPlaceholder: 'Keyword (blank shows recent memories)',
+      search: 'Search',
+      overview: 'Project Overview',
+      delete: 'Delete Memory',
+      logTitle: 'Status / Logs',
+      logHint: 'Latest 12',
+      welcome: 'Welcome to EverMemOS Cloud',
+      toastConfigSaved: 'Config saved',
+      connectionOk: `${EXTENSION_NAME}: Cloud API reachable`,
+      connectionFail: `${EXTENSION_NAME}: Cannot reach Cloud API`,
+      addMemoryDone: 'Memory submitted',
+      quickRecapDone: 'Search/recap completed',
+      overviewDone: 'Project overview generated',
+      deleteDone: 'Delete flow finished',
+      actionFailed: 'Action failed',
+      toastDefault: 'Done',
+      heroEyebrow: 'EverMem Cloud',
+      heroTitle: 'EverMemOS',
+    };
+  }
+
+  private getHtml(webview: vscode.Webview, initial: Record<string, string>, text: ReturnType<typeof this.getStrings>): string {
     const style = `
       :root { color-scheme: light dark; }
       body { font-family: var(--vscode-font-family); padding: 14px; background: var(--vscode-sideBar-background); color: var(--vscode-foreground); }
@@ -135,13 +225,41 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
       const qs = (id) => document.getElementById(id);
       const feed = qs('feed');
       const conn = qs('conn');
-      const setConn = (ok, text) => { conn.textContent = ok ? (text || '已连接') : (text || '未连接'); conn.className = 'badge ' + (ok ? 'ok' : 'fail'); };
+      const t = ${JSON.stringify(text)};
+      const setConn = (ok, textOverride) => { conn.textContent = ok ? (textOverride || t.statusOk) : (textOverride || t.statusFail); conn.className = 'badge ' + (ok ? 'ok' : 'fail'); };
       const push = (level, message) => { const li = document.createElement('li'); li.className = level === 'error' ? 'err' : 'ok'; const ts = new Date().toLocaleTimeString(); li.textContent = '[' + ts + '] ' + message; feed.prepend(li); while (feed.children.length > 12) { feed.removeChild(feed.lastChild); } };
+
+      // init text values
+      qs('heroSubtitle').textContent = t.heroSubtitle;
+      conn.textContent = t.statusPending;
+      qs('apiCardTitle').textContent = t.apiCard;
+      qs('testBtn').textContent = t.testConnection;
+      qs('apiBaseLabel').textContent = t.apiBaseLabel;
+      qs('apiKeyLabel').textContent = t.apiKeyLabel;
+      qs('apiKey').placeholder = t.apiKeyPlaceholder;
+      qs('saveBtn').textContent = t.save;
+      qs('openSettings').textContent = t.openSettings;
+      qs('envHint').textContent = t.envHint;
+      qs('quickOpsTitle').textContent = t.quickOps;
+      qs('quickOpsHint').textContent = t.quickOpsHint;
+      qs('memoryLabel').textContent = t.memoryLabel;
+      qs('memoryText').placeholder = t.memoryPlaceholder;
+      qs('noteLabel').textContent = t.noteLabel;
+      qs('memoryNote').placeholder = t.notePlaceholder;
+      qs('useSelectionLabel').lastChild.textContent = ' ' + t.useSelection;
+      qs('addMemoryBtn').textContent = t.saveMemory;
+      qs('searchLabel').textContent = t.searchLabel;
+      qs('searchQuery').placeholder = t.searchPlaceholder;
+      qs('quickRecapBtn').textContent = t.search;
+      qs('overviewBtn').textContent = t.overview;
+      qs('deleteBtn').textContent = t.delete;
+      qs('logTitle').textContent = t.logTitle;
+      qs('logHint').textContent = t.logHint;
 
       const initialBase = '${initial.apiBaseUrl.replace(/'/g, "&#39;")}';
       qs('apiBaseUrl').value = initialBase;
       qs('apiKey').value = '${(initial.apiKey || '').replace(/'/g, "&#39;")}';
-      push('info', '欢迎使用 EverMemOS Cloud');
+      push('info', t.welcome);
 
       qs('saveBtn').addEventListener('click', () => {
         vscodeApi.postMessage({ type: 'saveConfig', data: { apiBaseUrl: qs('apiBaseUrl').value.trim(), apiKey: qs('apiKey').value.trim() } });
@@ -157,14 +275,14 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
 
       window.addEventListener('message', (event) => {
         const msg = event.data;
-        if (msg?.type === 'connection') { setConn(!!msg.ok, msg.ok ? '已连接' : '未连接'); push(msg.ok ? 'success' : 'error', msg.ok ? 'Cloud API 可用' : 'Cloud API 不可用'); }
-        if (msg?.type === 'actionResult') { push(msg.ok ? 'success' : 'error', msg.message || '完成'); }
-        if (msg?.type === 'toast') { push(msg.level === 'error' ? 'error' : 'success', msg.message || '完成'); }
+        if (msg?.type === 'connection') { setConn(!!msg.ok); push(msg.ok ? 'success' : 'error', msg.ok ? t.connectionOk : t.connectionFail); }
+        if (msg?.type === 'actionResult') { push(msg.ok ? 'success' : 'error', msg.message || t.toastDefault); }
+        if (msg?.type === 'toast') { push(msg.level === 'error' ? 'error' : 'success', msg.message || t.toastDefault); }
       });
     `;
 
     return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${text.lang}">
 <head>
   <meta charset="UTF-8">
   <style>${style}</style>
@@ -172,52 +290,52 @@ export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
 <body>
   <div class="hero">
     <div>
-      <div class="eyebrow">EverMem Cloud</div>
-      <h2>EverMemOS</h2>
-      <div class="hint">云端记忆捕获 · 快捷搜索 · 项目概览</div>
+      <div class="eyebrow">${text.heroEyebrow}</div>
+      <h2>${text.heroTitle}</h2>
+      <div id="heroSubtitle" class="hint">${text.heroSubtitle}</div>
     </div>
-    <div id="conn" class="badge fail">待检测</div>
+    <div id="conn" class="badge fail">${text.statusPending}</div>
   </div>
 
   <div class="grid">
     <section class="card">
-      <header><span>Cloud API</span><button class="ghost" id="testBtn">测试连接</button></header>
-      <label for="apiBaseUrl">API Base URL</label>
+      <header><span id="apiCardTitle">${text.apiCard}</span><button class="ghost" id="testBtn">${text.testConnection}</button></header>
+      <label id="apiBaseLabel" for="apiBaseUrl">${text.apiBaseLabel}</label>
       <input id="apiBaseUrl" type="text" placeholder="https://api.evermind.ai" />
-      <label for="apiKey">API Key（console.evermind.ai 获取，例如 111111f9-199a-4665-ad1c-111111111111）</label>
+      <label id="apiKeyLabel" for="apiKey">${text.apiKeyLabel}</label>
       <div class="row">
-        <input id="apiKey" type="password" placeholder="粘贴你的 EverMem API Key" />
-        <button id="saveBtn">保存</button>
+        <input id="apiKey" type="password" placeholder="${text.apiKeyPlaceholder}" />
+        <button id="saveBtn">${text.save}</button>
       </div>
       <div class="row" style="margin-top:6px; justify-content: space-between;">
-        <button class="secondary" id="openSettings">打开设置</button>
+        <button class="secondary" id="openSettings">${text.openSettings}</button>
       </div>
-      <p class="hint">支持环境变量 EVERMEM_API_KEY，默认指向云端 https://api.evermind.ai</p>
+      <p id="envHint" class="hint">${text.envHint}</p>
     </section>
 
     <section class="card">
-      <header><span>快速操作</span><span class="hint">使用选区或自定义文本</span></header>
-      <label for="memoryText">添加记忆（留空则使用当前文件/选区）</label>
-      <textarea id="memoryText" placeholder="可选：直接在此粘贴要保存的内容"></textarea>
-      <label for="memoryNote">可选备注</label>
-      <textarea id="memoryNote" placeholder="例如：这段代码初始化了配置"></textarea>
+      <header><span id="quickOpsTitle">${text.quickOps}</span><span id="quickOpsHint" class="hint">${text.quickOpsHint}</span></header>
+      <label id="memoryLabel" for="memoryText">${text.memoryLabel}</label>
+      <textarea id="memoryText" placeholder="${text.memoryPlaceholder}"></textarea>
+      <label id="noteLabel" for="memoryNote">${text.noteLabel}</label>
+      <textarea id="memoryNote" placeholder="${text.notePlaceholder}"></textarea>
       <div class="row" style="margin-top:6px; justify-content: space-between;">
-        <label class="inline"><input id="useSelection" type="checkbox" checked /> 优先使用当前选区/文件</label>
-        <button id="addMemoryBtn">保存记忆</button>
+        <label id="useSelectionLabel" class="inline"><input id="useSelection" type="checkbox" checked /> ${text.useSelection}</label>
+        <button id="addMemoryBtn">${text.saveMemory}</button>
       </div>
-      <label for="searchQuery" style="margin-top:10px;">搜索 / 快速回顾</label>
+      <label id="searchLabel" for="searchQuery" style="margin-top:10px;">${text.searchLabel}</label>
       <div class="row">
-        <input id="searchQuery" type="text" placeholder="输入关键词，留空查看最近记忆" />
-        <button id="quickRecapBtn">搜索</button>
+        <input id="searchQuery" type="text" placeholder="${text.searchPlaceholder}" />
+        <button id="quickRecapBtn">${text.search}</button>
       </div>
       <div class="row" style="margin-top:8px; justify-content: flex-end; gap:8px;">
-        <button class="secondary" id="overviewBtn">项目概览</button>
-        <button class="secondary" id="deleteBtn">删除记忆</button>
+        <button class="secondary" id="overviewBtn">${text.overview}</button>
+        <button class="secondary" id="deleteBtn">${text.delete}</button>
       </div>
     </section>
 
     <section class="card">
-      <header><span>状态 / 日志</span><span class="hint">最近 12 条</span></header>
+      <header><span id="logTitle">${text.logTitle}</span><span id="logHint" class="hint">${text.logHint}</span></header>
       <ul id="feed"></ul>
     </section>
   </div>
