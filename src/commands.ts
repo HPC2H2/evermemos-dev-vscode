@@ -13,7 +13,7 @@ import {
   requestWithRetry,
   testConnection,
 } from './config';
-import { getCurrentSelectionOrFile, isApiResponse, safeTruncate, logUserNote } from './utils';
+import { getCurrentSelectionOrFile, getGitBranch, isApiResponse, safeTruncate, logUserNote } from './utils';
 
 const isZh = (vscode.env.language || '').toLowerCase().startsWith('zh');
 const L = (en: string, zh: string) => (isZh ? zh : en);
@@ -159,6 +159,36 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
     text = `${text}\n\n[User Note]\n${extraInput.trim()}`;
   }
 
+  const branch = getGitBranch();
+  const memCell = selection
+    ? {
+        type: text.toLowerCase().includes('error') || text.toLowerCase().includes('exception') ? 'bug' : 'code',
+        filePath: selection.fileInfo.path,
+        language: selection.fileInfo.language,
+        codeSnippet: selection.text,
+        branch,
+        workspace: vscode.workspace.name || undefined,
+        selected: selection.fileInfo.selected,
+      }
+    : (() => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+          return undefined;
+        }
+        const doc = editor.document;
+        const sel = editor.selection;
+        const snippet = sel.isEmpty ? doc.getText() : doc.getText(sel);
+        return {
+          type: snippet.toLowerCase().includes('error') || snippet.toLowerCase().includes('exception') ? 'bug' : 'code',
+          filePath: doc.uri.fsPath,
+          language: doc.languageId,
+          codeSnippet: snippet,
+          branch,
+          workspace: vscode.workspace.name || undefined,
+          selected: !sel.isEmpty,
+        };
+      })();
+
   const client = createClient(config);
   const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
   const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
@@ -185,6 +215,11 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
           group_name: groupId,
           role: 'user',
           flush: true,
+          metadata: {
+            branch,
+            workspace: vscode.workspace.name || undefined,
+            mem_cell: memCell,
+          },
         };
         logOutput(`[${EXTENSION_NAME}] add payload`, payload);
 
@@ -437,20 +472,23 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
             .replace(/'/g, '&#39;');
 
         const items = flattened.map((m, idx) => {
-          const lang = (m.file_info?.language || m.language || 'plaintext') as string;
-          const code = (m.content || m.summary || '').toString();
-          const filePath = (m.file_info?.path || m.metadata?.file_info?.path) as string | undefined;
-          const startLine = m.file_info?.startLine ?? m.metadata?.file_info?.startLine;
+          const memCell = (m.metadata && (m.metadata.mem_cell || m.metadata.memCell)) || m.mem_cell;
+          const lang = (memCell?.language || m.file_info?.language || m.language || 'plaintext') as string;
+          const code = (memCell?.codeSnippet || m.content || m.summary || '').toString();
+          const filePath = (memCell?.filePath || m.file_info?.path || m.metadata?.file_info?.path) as string | undefined;
+          const startLine = memCell?.startLine ?? m.file_info?.startLine ?? m.metadata?.file_info?.startLine;
+          const branchName = memCell?.branch || m.metadata?.branch;
           return {
             title: `#${idx + 1} ${safeTruncate(m.summary || m.content || '', 80)}`,
             user: m.user_id || '',
             group: m.group_id || '',
-            type: m.memory_type || '',
+            type: m.memory_type || memCell?.type || '',
             ts: m.timestamp || m.created_at || '',
             lang,
             code,
             filePath,
             startLine,
+            branch: branchName,
           };
         });
 
@@ -475,7 +513,7 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
             (item, idx) => `
               <div class="card">
                 <div class="header"><strong>${escapeHtml(item.title)}</strong></div>
-                <div class="meta">${escapeHtml(item.user || '')} ${escapeHtml(item.group || '')} ${escapeHtml(item.type || '')} ${escapeHtml(item.ts || '')}</div>
+                <div class="meta">${escapeHtml(item.user || '')} ${escapeHtml(item.group || '')} ${escapeHtml(item.type || '')} ${escapeHtml(item.ts || '')} ${item.branch ? ' | ' + escapeHtml(item.branch) : ''}</div>
                 <pre><code class="language-${item.lang}">${escapeHtml(item.code)}</code></pre>
                 <div class="actions">
                   <button onclick="insertCode(${idx})">${L('Insert to editor', '插入到编辑器')}</button>

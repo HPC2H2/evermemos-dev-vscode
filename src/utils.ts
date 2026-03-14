@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { execSync } from 'child_process';
 import { EXTENSION_NAME, logOutput } from './config';
 
 export function isApiResponse<T>(obj: any): obj is { success: boolean; data?: T } {
@@ -84,6 +85,22 @@ export function getCurrentSelectionOrFile():
     },
   };
   return { text, meta, fileInfo };
+}
+
+export function getGitBranch(): string | undefined {
+  try {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) {
+      return undefined;
+    }
+    const cwd = folders[0].uri.fsPath;
+    const output = execSync('git rev-parse --abbrev-ref HEAD', { cwd, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+    return output || undefined;
+  } catch (e) {
+    return undefined;
+  }
 }
 
 export function logUserNote(note?: string) {
