@@ -3,6 +3,7 @@
 [English version](#evermemos-vs-code-extension-cloud) | [中文](#evermemos-vs-code-插件云端版)
 
 将 EverMem Cloud 直接接入 VS Code：保存/搜索/概览记忆，一键侧边栏操作，命令面板亦可用。
+点击以下链接可观看demo视频：
 https://github.com/user-attachments/assets/c81924dd-5be1-4a26-b780-a949442fd751
 ## 本版变更（官方云端兼容）
 - 路径按配置自动优先：默认云端 `/api/v0/...`，若 `apiBaseUrl` 带 `/api/v1` 则优先 `/api/v1/...`（仍保留 v0 兜底）。
@@ -76,6 +77,8 @@ npm test
 [中文版本](#evermemos-vs-code-插件云端版)
 
 Bring EverMem Cloud into VS Code: save/search/overview memories from the sidebar or Command Palette.
+Click the link below to watch demo video:
+https://github.com/user-attachments/assets/c81924dd-5be1-4a26-b780-a949442fd751
 
 ## What’s new (cloud-compatible)
 - Path preference honors config: default to `/api/v0/...`; if `apiBaseUrl` ends with `/api/v1`, v1 paths are tried first (v0 kept as fallback).
