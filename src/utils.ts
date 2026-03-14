@@ -40,6 +40,7 @@ export function getCurrentSelectionOrFile():
         startLine: number;
         endLine: number;
         totalLines: number;
+        selected: boolean;
       };
     }
   | null {

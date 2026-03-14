@@ -66,6 +66,20 @@
         "category": "EverMemOS"
       }
     ],
+    "keybindings": [
+      {
+        "command": "evermem.addMemory",
+        "key": "alt+m",
+        "mac": "alt+m",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "evermem.quickRecap",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "editorTextFocus"
+      }
+    ],
     "configuration": {
       "title": "EverMemOS",
       "properties": {

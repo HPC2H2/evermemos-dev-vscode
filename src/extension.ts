@@ -45,6 +45,18 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('evermem.quickRecap', () => handleQuickRecap()),
     vscode.commands.registerCommand('evermem.projectOverview', () => handleProjectOverview()),
     vscode.commands.registerCommand('evermem.deleteMemory', () => handleDeleteMemory()),
+    vscode.commands.registerCommand('evermem.insertSnippet', (_event, code?: string) => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage(`${EXTENSION_NAME}: No active editor to insert snippet.`);
+        return;
+      }
+      const snippet = code || '';
+      editor.edit((editBuilder) => {
+        editBuilder.insert(editor.selection.active, snippet);
+      });
+      vscode.window.showInformationMessage(`${EXTENSION_NAME}: Snippet inserted.`);
+    }),
     vscode.commands.registerCommand('evermem.openSidebar', () => {
       vscode.commands.executeCommand('workbench.view.extension.evermemViewContainer');
     }),

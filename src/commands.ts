@@ -108,16 +108,40 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
   if (!text && selection?.text) {
     text = selection.text;
   }
+
+  const buildStructuredContext = () => {
+    if (selection) {
+      const info = selection.fileInfo;
+      const header = `File: ${info.path}\nLanguage: ${info.language}\nLines: ${info.startLine + 1}-${info.endLine + 1}/${info.totalLines}\nSelected: ${info.selected}`;
+      return `${header}\n---\n${selection.text}`;
+    }
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      const doc = editor.document;
+      const sel = editor.selection;
+      const content = sel.isEmpty ? doc.getText() : doc.getText(sel);
+      const header = `File: ${doc.uri.fsPath}\nLanguage: ${doc.languageId}\nSelected: ${!sel.isEmpty}`;
+      return `${header}\n---\n${content}`.trim();
+    }
+    return '';
+  };
+
   if (!text) {
     const input = await vscode.window.showInputBox({
       title: `${EXTENSION_NAME}: ${L('Add memory', '添加记忆')}`,
-      prompt: L('Enter content to add (leave blank to cancel)', '输入要添加的内容（留空取消）'),
+      prompt: L('Enter content to add (leave blank to auto-capture current file/selection)', '输入要添加的内容（留空则自动抓取当前文件/选区）'),
       ignoreFocusOut: true,
     });
-    if (!input) {
+    if (input === undefined) {
       return { ok: false, message: L('No input', '未输入内容') };
     }
-    text = input.trim();
+    text = (input || '').trim();
+    if (!text) {
+      text = buildStructuredContext();
+    }
+    if (!text) {
+      return { ok: false, message: L('No input', '未输入内容') };
+    }
   }
 
   const extraInput =
@@ -403,6 +427,121 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
         });
         const profiles: any[] = result?.profiles || [];
         const total = result?.total_count ?? flattened.length;
+
+        const escapeHtml = (str: string) =>
+          str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+
+        const items = flattened.map((m, idx) => {
+          const lang = (m.file_info?.language || m.language || 'plaintext') as string;
+          const code = (m.content || m.summary || '').toString();
+          const filePath = (m.file_info?.path || m.metadata?.file_info?.path) as string | undefined;
+          const startLine = m.file_info?.startLine ?? m.metadata?.file_info?.startLine;
+          return {
+            title: `#${idx + 1} ${safeTruncate(m.summary || m.content || '', 80)}`,
+            user: m.user_id || '',
+            group: m.group_id || '',
+            type: m.memory_type || '',
+            ts: m.timestamp || m.created_at || '',
+            lang,
+            code,
+            filePath,
+            startLine,
+          };
+        });
+
+        const panel = vscode.window.createWebviewPanel(
+          'evermem.search',
+          `${EXTENSION_NAME}: ${L('Search Results', '搜索结果')}`,
+          vscode.ViewColumn.Beside,
+          {
+            enableScripts: true,
+            retainContextWhenHidden: true,
+          }
+        );
+
+        const script = `const vscode = acquireVsCodeApi();
+          const items = ${JSON.stringify(items)};
+          function insertCode(i){ const item = items[i]; vscode.postMessage({ type: 'insert', code: item.code, lang: item.lang }); }
+          function openFile(i){ const item = items[i]; if(!item.filePath) return; vscode.postMessage({ type: 'open', path: item.filePath, line: item.startLine ?? 0 }); }
+        `;
+
+        const htmlItems = items
+          .map(
+            (item, idx) => `
+              <div class="card">
+                <div class="header"><strong>${escapeHtml(item.title)}</strong></div>
+                <div class="meta">${escapeHtml(item.user || '')} ${escapeHtml(item.group || '')} ${escapeHtml(item.type || '')} ${escapeHtml(item.ts || '')}</div>
+                <pre><code class="language-${item.lang}">${escapeHtml(item.code)}</code></pre>
+                <div class="actions">
+                  <button onclick="insertCode(${idx})">${L('Insert to editor', '插入到编辑器')}</button>
+                  ${item.filePath ? `<button onclick=\"openFile(${idx})\">${L('Open file', '打开文件')}</button>` : ''}
+                </div>
+              </div>
+            `
+          )
+          .join('');
+
+        panel.webview.html = `<!DOCTYPE html>
+          <html lang="en">
+            <head>
+              <meta charset="UTF-8" />
+              <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' 'unsafe-eval';" />
+              <style>
+                body { font-family: var(--vscode-font-family); padding: 12px; }
+                .card { border: 1px solid var(--vscode-editorWidget-border); border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+                .header { margin-bottom: 4px; }
+                .meta { color: var(--vscode-descriptionForeground); font-size: 12px; margin-bottom: 8px; }
+                pre { background: var(--vscode-editor-background); padding: 8px; overflow-x: auto; }
+                .actions { display: flex; gap: 8px; margin-top: 8px; }
+                button { cursor: pointer; }
+              </style>
+            </head>
+            <body>
+              <h2>${escapeHtml(`${EXTENSION_NAME}: ${L('Search Results', '搜索结果')}`)}</h2>
+              ${htmlItems || `<div>${L('No memories found', '未找到记忆')}</div>`}
+              <script>${script}</script>
+            </body>
+          </html>`;
+
+        panel.webview.onDidReceiveMessage(async (msg) => {
+          if (msg.type === 'insert') {
+            const normalize = (val: any) =>
+              typeof val === 'string'
+                ? val.replace(/\r\n/g, '\n').replace(/\\n/g, '\n').replace(/\\t/g, '\t')
+                : '';
+            const codeText = normalize(msg.code);
+            let editor = vscode.window.activeTextEditor;
+            if (!editor) {
+              const doc = await vscode.workspace.openTextDocument({ content: codeText, language: msg.lang || 'plaintext' });
+              editor = await vscode.window.showTextDocument(doc, { preview: false });
+              vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${L('Opened new document and inserted snippet.', '已打开新文档并插入片段。')}`);
+              return;
+            }
+            await editor.edit((editBuilder) => {
+              editBuilder.insert(editor.selection.active, codeText);
+            });
+            vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${L('Inserted snippet', '已插入片段')}`);
+          } else if (msg.type === 'open' && msg.path) {
+            try {
+              const doc = await vscode.workspace.openTextDocument(msg.path);
+              const shown = await vscode.window.showTextDocument(doc, { preview: true });
+              const line = typeof msg.line === 'number' ? msg.line : 0;
+              const pos = new vscode.Position(Math.max(line, 0), 0);
+              shown.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+            } catch (e) {
+              vscode.window.showErrorMessage(`${EXTENSION_NAME}: ${L('Failed to open file', '打开文件失败')}: ${msg.path}`);
+            }
+          }
+        });
+
+        summaryMessage = `${EXTENSION_NAME}: ${L(`Search completed, ${flattened.length} memories`, `搜索完成，${flattened.length} 条记忆`)}`;
+        vscode.window.showInformationMessage(summaryMessage);
+        return;
 
         let md = `# ${EXTENSION_NAME} ${L('Search Results', '搜索结果')}\n\n`;
         md += `- ${L('Query', '查询')}: ${query || L('(recent)', '（最近）')}\n- ${L('Total', '总数')}: ${total}\n\n`;
