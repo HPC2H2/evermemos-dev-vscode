@@ -32,10 +32,10 @@ export type SidebarActionPayload =
 export const DEFAULT_API_BASE_URL = 'https://api.evermind.ai';
 export const API_PATHS = {
   // Cloud default v0; include v1 for local/self-hosted
-  MEMORIES: ['/api/v0/memories', '/api/v1/memories'],
+  MEMORIES: ['/api/v0/memories', '/api/v1/memories', '/api/memories', '/memories'],
   MEMORIES_SEARCH: ['/api/v0/memories/search', '/api/v1/memories/search'],
-  MEMORIES_DELETE: ['/api/v0/memories', '/api/v1/memories'],
-  CONVERSATION_META: ['/api/v0/memories/conversation-meta', '/api/v1/memories/conversation-meta'],
+  MEMORIES_DELETE: ['/api/v0/memories', '/api/v1/memories', '/api/memories', '/memories'],
+  CONVERSATION_META: ['/api/v0/memories/conversation-meta', '/api/v1/memories/conversation-meta', '/api/memories/conversation-meta', '/memories/conversation-meta'],
   REQUEST_STATUS: ['/api/v1/stats/request', '/api/v0/stats/request', '/api/stats/request', '/stats/request'],
   HEALTH: ['/api/health', '/health', '/'],
 } as const;
@@ -226,10 +226,27 @@ export async function testConnection(config: EvermemConfig): Promise<boolean> {
     try {
       const response = await requestWithRetry<AxiosResponse>(() => client.get(path, { timeout: 5000 }));
       if (response.status < 500) {
-        return true;
+        // proceed to auth check
+        break;
       }
     } catch (error) {
       // try next
+    }
+  }
+  // auth check: try a lightweight GET /memories with user_id
+  const probeParams = { user_id: vscode.env.machineId || undefined, top_k: 1 } as Record<string, any>;
+  const memPaths = orderPaths(API_PATHS.MEMORIES, preferred);
+  for (const path of memPaths) {
+    try {
+      const resp = await requestWithRetry<AxiosResponse>(() => client.get(path, { params: probeParams, timeout: 5000 }));
+      if (resp.status < 500) {
+        return true;
+      }
+    } catch (error) {
+      if (axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) {
+        return false;
+      }
+      // try next path
     }
   }
   return false;

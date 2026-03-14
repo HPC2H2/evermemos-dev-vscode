@@ -15,6 +15,9 @@ import {
 } from './config';
 import { getCurrentSelectionOrFile, isApiResponse, safeTruncate, logUserNote } from './utils';
 
+const isZh = (vscode.env.language || '').toLowerCase().startsWith('zh');
+const L = (en: string, zh: string) => (isZh ? zh : en);
+
 function handleError(err: unknown, context: string): void {
   console.error(`[${EXTENSION_NAME}] ${context} failed:`, err);
   let message = `${EXTENSION_NAME}: ${context} failed`;
@@ -87,16 +90,16 @@ function handleError(err: unknown, context: string): void {
 export async function handleAddMemory(options?: { text?: string; note?: string; useSelection?: boolean }): Promise<ActionResult> {
   const config = getConfig();
   if (!config) {
-    return { ok: false, message: '配置缺失' };
+    return { ok: false, message: L('Configuration missing', '配置缺失') };
   }
 
   const isConnected = await testConnection(config);
   if (!isConnected) {
     vscode.window.showErrorMessage(
-      `${EXTENSION_NAME}: Cannot connect to server at ${config.apiBaseUrl}. Please check your configuration.`,
-      'Open Settings'
+      `${EXTENSION_NAME}: ${L('Cannot connect to server at', '无法连接到服务器')} ${config.apiBaseUrl}. ${L('Please check your configuration.', '请检查配置。')}`,
+      L('Open Settings', '打开设置')
     );
-    return { ok: false, message: '连接失败' };
+    return { ok: false, message: L('Connection failed', '连接失败') };
   }
 
   let text = options?.text?.trim() || '';
@@ -107,12 +110,12 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
   }
   if (!text) {
     const input = await vscode.window.showInputBox({
-      title: `${EXTENSION_NAME}: Add memory`,
-      prompt: '输入要添加的内容（留空取消）',
+      title: `${EXTENSION_NAME}: ${L('Add memory', '添加记忆')}`,
+      prompt: L('Enter content to add (leave blank to cancel)', '输入要添加的内容（留空取消）'),
       ignoreFocusOut: true,
     });
     if (!input) {
-      return { ok: false, message: '未输入内容' };
+      return { ok: false, message: L('No input', '未输入内容') };
     }
     text = input.trim();
   }
@@ -120,9 +123,9 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
   const extraInput =
     options?.note ??
     (await vscode.window.showInputBox({
-      title: `${EXTENSION_NAME}: 可选补充文本`,
-      prompt: '可留空；若填写，将与选中文本一起提交',
-      placeHolder: '例如：本段代码用于初始化配置',
+      title: `${EXTENSION_NAME}: ${L('Optional note', '可选补充文本')}`,
+      prompt: L('Optional; will be submitted with selection/text', '可留空；若填写，将与选中文本一起提交'),
+      placeHolder: L('e.g., This code initializes config', '例如：本段代码用于初始化配置'),
       value: '',
       valueSelection: [0, 0],
       ignoreFocusOut: true,
@@ -144,7 +147,7 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Adding memory...`,
+        title: `${EXTENSION_NAME}: ${L('Adding memory...', '正在添加记忆...')}`,
         cancellable: false,
       },
       async (progress) => {
@@ -214,7 +217,7 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
         vscode.window.showInformationMessage(tip);
       }
     );
-    return { ok: true, message: '记忆提交成功' };
+    return { ok: true, message: L('Memory submitted', '记忆提交成功') };
   } catch (error) {
     handleError(error, 'Add memory');
     return { ok: false, message: (error as Error)?.message };
@@ -224,34 +227,36 @@ export async function handleAddMemory(options?: { text?: string; note?: string; 
 export async function handleQuickRecap(options?: { query?: string; openDocument?: boolean }): Promise<ActionResult> {
   const config = getConfig();
   if (!config) {
-    return { ok: false, message: '配置缺失' };
+    return { ok: false, message: L('Configuration missing', '配置缺失') };
   }
 
   const client = createClient(config);
   const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
   const searchPaths = orderPaths(API_PATHS.MEMORIES_SEARCH, preferredVersion);
-  const query = options?.query ??
-    (await vscode.window.showInputBox({
-      title: `${EXTENSION_NAME}: Search memories`,
-      prompt: '输入搜索关键词（留空则返回最近的记忆）',
-      placeHolder: 'e.g., coffee preference',
-      ignoreFocusOut: true,
-    }));
+  const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
+    const query = options?.query ??
+      (await vscode.window.showInputBox({
+        title: `${EXTENSION_NAME}: ${L('Search memories', '搜索记忆')}`,
+        prompt: L('Enter keyword (blank returns recent)', '输入搜索关键词（留空则返回最近的记忆）'),
+        placeHolder: L('e.g., coffee preference', '例如：登录失败'),
+        ignoreFocusOut: true,
+      }));
+
   if (query === undefined) {
-    return { ok: false, message: '已取消' };
+    return { ok: false, message: L('Cancelled', '已取消') };
   }
 
   try {
     logOutput(`[${EXTENSION_NAME}] start search`, { query: query || '(recent)' });
-    let summaryMessage = `${EXTENSION_NAME}: Search completed`;
+    let summaryMessage = `${EXTENSION_NAME}: ${L('Search completed', '搜索完成')}`;
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Searching memories...`,
+        title: `${EXTENSION_NAME}: ${L('Searching memories...', '正在搜索记忆...')}`,
         cancellable: true,
       },
       async (progress, token) => {
-        progress.report({ increment: 20, message: 'Calling search API...' });
+        progress.report({ increment: 20, message: L('Calling search API...', '正在调用搜索接口...') });
 
         const groupId = vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined;
         const basePayload = {
@@ -260,18 +265,20 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
           group_id: groupId,
           group_ids: groupId ? [groupId] : undefined,
           include_metadata: true,
-          top_k: 20,
+          top_k: 100,
         };
 
         const payloadCandidates = [basePayload];
         if (basePayload.group_id) {
           payloadCandidates.push({ ...basePayload, group_id: undefined, group_ids: undefined });
         }
+        payloadCandidates.push({ ...basePayload, user_id: undefined, group_id: undefined, group_ids: undefined });
 
         let resp: any;
         let lastErr: any;
-        let usedMethod: 'GET' | 'POST' = 'GET';
-        let usedPayload = payloadCandidates[0];
+        let had404 = false;
+        let usedMethod: string = 'GET';
+        let usedPayload: any = payloadCandidates[0];
         const extractCount = (data: any) => {
           const result = (data as any)?.result || (isApiResponse<any>(data) ? (data as any).data : data) || {};
           const rawMemories: any[] = result?.memories || [];
@@ -307,6 +314,7 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
             } catch (err) {
               lastErr = err;
               if (axios.isAxiosError(err) && err.response?.status === 404) {
+                had404 = true;
                 console.warn(`[${EXTENSION_NAME}] ${path} (GET) not found, trying next path...`);
                 continue;
               }
@@ -329,6 +337,7 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
               } catch (err) {
                 lastErr = err;
                 if (axios.isAxiosError(err) && err.response?.status === 404) {
+                  had404 = true;
                   console.warn(`[${EXTENSION_NAME}] ${path} (POST) not found, trying next path...`);
                   continue;
                 }
@@ -337,6 +346,37 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
             }
           }
         }
+        if (!resp && had404) {
+          // Fallback: list memories when search endpoint is missing
+          for (const path of memoriesPaths) {
+            try {
+              const listResp = await requestWithRetry(() =>
+                client.get(path, {
+                  params: {
+                    user_id: vscode.env.machineId || undefined,
+                    group_id: groupId,
+                    group_ids: groupId ? [groupId] : undefined,
+                    memory_type: 'episodic_memory',
+                    page: 1,
+                    page_size: 100,
+                  },
+                })
+              );
+              resp = listResp;
+              usedMethod = 'GET(memories)';
+              usedPayload = { fallback: true };
+              break;
+            } catch (err) {
+              lastErr = err;
+              if (axios.isAxiosError(err) && err.response?.status === 404) {
+                console.warn(`[${EXTENSION_NAME}] ${path} fallback not found, trying next...`);
+                continue;
+              }
+              throw err;
+            }
+          }
+        }
+
         if (!resp && lastErr) {
           throw lastErr;
         }
@@ -346,7 +386,7 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
           return;
         }
 
-        progress.report({ increment: 50, message: 'Rendering results...' });
+        progress.report({ increment: 50, message: L('Rendering results...', '正在渲染结果...') });
 
         const data = resp?.data || {};
         const result = (data as any).result || (isApiResponse<any>(data) ? (data as any).data : data);
@@ -364,24 +404,24 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
         const profiles: any[] = result?.profiles || [];
         const total = result?.total_count ?? flattened.length;
 
-        let md = `# ${EXTENSION_NAME} Search Results\n\n`;
-        md += `- Query: ${query || '(recent)'}\n- Total: ${total}\n\n`;
+        let md = `# ${EXTENSION_NAME} ${L('Search Results', '搜索结果')}\n\n`;
+        md += `- ${L('Query', '查询')}: ${query || L('(recent)', '（最近）')}\n- ${L('Total', '总数')}: ${total}\n\n`;
 
         if (flattened.length) {
-          md += `## Memories\n`;
+          md += `## ${L('Memories', '记忆')}\n`;
           flattened.forEach((m, idx) => {
-            md += `### #${idx + 1}\n- user_id: ${m.user_id || ''}\n- group_id: ${m.group_id || ''}\n- type: ${m.memory_type || ''}\n- timestamp: ${m.timestamp || ''}\n- summary/content: ${m.summary || m.content || ''}\n\n`;
+            md += `### #${idx + 1}\n- ${L('user_id', '用户ID')}: ${m.user_id || ''}\n- ${L('group_id', '群组ID')}: ${m.group_id || ''}\n- ${L('type', '类型')}: ${m.memory_type || ''}\n- ${L('timestamp', '时间戳')}: ${m.timestamp || ''}\n- ${L('summary/content', '摘要/内容')}: ${m.summary || m.content || ''}\n\n`;
           });
         }
 
         if (profiles.length) {
-          md += `## Profiles\n`;
+          md += `## ${L('Profiles', '画像')}\n`;
           profiles.forEach((p, idx) => {
-            md += `### Profile #${idx + 1}\n- category: ${p.category || ''}\n- trait: ${p.trait_name || ''}\n- score: ${p.score ?? ''}\n- description: ${p.description || ''}\n\n`;
+            md += `### ${L('Profile', '画像')} #${idx + 1}\n- ${L('category', '类别')}: ${p.category || ''}\n- ${L('trait', '特征')}: ${p.trait_name || ''}\n- ${L('score', '得分')}: ${p.score ?? ''}\n- ${L('description', '描述')}: ${p.description || ''}\n\n`;
           });
         }
 
-        summaryMessage = `${EXTENSION_NAME}: 搜索完成，${flattened.length} 条记忆`;
+        summaryMessage = `${EXTENSION_NAME}: ${L(`Search completed, ${flattened.length} memories`, `搜索完成，${flattened.length} 条记忆`)}`;
 
         if (options?.openDocument !== false) {
           const doc = await vscode.workspace.openTextDocument({
@@ -408,7 +448,7 @@ export async function handleQuickRecap(options?: { query?: string; openDocument?
 export async function handleProjectOverview(options?: { pageSize?: number; openDocument?: boolean }): Promise<ActionResult> {
   const config = getConfig();
   if (!config) {
-    return { ok: false, message: '配置缺失' };
+    return { ok: false, message: L('Configuration missing', '配置缺失') };
   }
 
   const client = createClient(config);
@@ -416,24 +456,25 @@ export async function handleProjectOverview(options?: { pageSize?: number; openD
   const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
 
   try {
-    let summaryMessage = `${EXTENSION_NAME}: Memories overview loaded.`;
+    let summaryMessage = `${EXTENSION_NAME}: ${L('Memories overview loaded.', '记忆概览已加载')}`;
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Fetching memories overview...`,
+        title: `${EXTENSION_NAME}: ${L('Fetching memories overview...', '正在获取记忆概览...')}`,
         cancellable: true,
       },
       async (progress, token) => {
         progress.report({ increment: 30 });
 
         const groupId = vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined;
+        const pageSize = Math.min(options?.pageSize ?? 100, 100);
         const params = {
           user_id: vscode.env.machineId || undefined,
           group_id: groupId,
           group_ids: groupId ? [groupId] : undefined,
           memory_type: 'episodic_memory',
           page: 1,
-          page_size: options?.pageSize ?? 40,
+          page_size: pageSize,
         } as Record<string, any>;
 
         const paramsList = [params];
@@ -476,20 +517,20 @@ export async function handleProjectOverview(options?: { pageSize?: number; openD
         const total = result?.total_count ?? memories.length;
         const metadata = result?.metadata || {};
 
-        let md = `# ${EXTENSION_NAME} Memories Overview\n\n`;
-        md += `- Total memories: ${total}\n`;
-        md += `- User: ${params.user_id || 'n/a'}\n`;
-        md += `- Group: ${params.group_id || 'n/a'}\n`;
+        let md = `# ${EXTENSION_NAME} ${L('Memories Overview', '记忆概览')}\n\n`;
+        md += `- ${L('Total memories', '记忆总数')}: ${total}\n`;
+        md += `- ${L('User', '用户')}: ${params.user_id || 'n/a'}\n`;
+        md += `- ${L('Group', '群组')}: ${params.group_id || 'n/a'}\n`;
         if (metadata.memory_type) {
-          md += `- memory_type: ${metadata.memory_type}\n`;
+          md += `- ${L('memory_type', '记忆类型')}: ${metadata.memory_type}\n`;
         }
-        md += '\n## Latest items\n';
+        md += `\n## ${L('Latest items', '最新条目')}\n`;
 
         memories.forEach((m, idx) => {
-          md += `### #${idx + 1}\n- user_id: ${m.user_id || ''}\n- group_id: ${m.group_id || ''}\n- request_id: ${m.request_id || m.message_id || ''}\n- type: ${m.memory_type || ''}\n- timestamp: ${m.timestamp || ''}\n- summary/content: ${m.summary || m.content || ''}\n\n`;
+          md += `### #${idx + 1}\n- ${L('user_id', '用户ID')}: ${m.user_id || ''}\n- ${L('group_id', '群组ID')}: ${m.group_id || ''}\n- ${L('request_id', '请求ID')}: ${m.request_id || m.message_id || ''}\n- ${L('type', '类型')}: ${m.memory_type || ''}\n- ${L('timestamp', '时间戳')}: ${m.timestamp || ''}\n- ${L('summary/content', '摘要/内容')}: ${m.summary || m.content || ''}\n\n`;
         });
 
-        summaryMessage = `${EXTENSION_NAME}: 概览完成，${memories.length} 条，Total ${total}`;
+        summaryMessage = `${EXTENSION_NAME}: ${L(`Overview done, ${memories.length} items, Total ${total}`, `概览完成，${memories.length} 条，Total ${total}`)}`;
 
         if (options?.openDocument !== false) {
           const doc = await vscode.workspace.openTextDocument({
@@ -517,24 +558,24 @@ export async function handleProjectOverview(options?: { pageSize?: number; openD
 export async function handleDeleteMemory(): Promise<ActionResult> {
   const config = getConfig();
   if (!config) {
-    return { ok: false, message: '配置缺失' };
+    return { ok: false, message: L('Configuration missing', '配置缺失') };
   }
 
   const client = createClient(config);
   const preferredVersion = getPreferredApiVersion(config.apiBaseUrl);
   const searchPaths = orderPaths(API_PATHS.MEMORIES_SEARCH, preferredVersion);
   const memoriesPaths = orderPaths(API_PATHS.MEMORIES, preferredVersion);
-  let result: ActionResult = { ok: false, message: '已取消' };
+  let result: ActionResult = { ok: false, message: L('Cancelled', '已取消') };
 
   try {
     const searchMethod = await vscode.window.showQuickPick(
       [
-        { label: '$(search) Search memories', description: 'Search by keyword', value: 'search' },
-        { label: '$(list-unordered) View recent memories', description: 'Show latest memories', value: 'recent' },
-        { label: '$(device-camera) Refresh last add (by request_id)', description: 'Check request status then search', value: 'status' },
+        { label: `$(search) ${L('Search memories', '搜索记忆')}`, description: L('Search by keyword', '按关键词搜索'), value: 'search' },
+        { label: `$(list-unordered) ${L('View recent memories', '查看最近记忆')}`, description: L('Show latest memories', '显示最近的记忆'), value: 'recent' },
+        { label: `$(device-camera) ${L('Refresh last add (by request_id)', '按 request_id 刷新最近添加')}`, description: L('Check request status then search', '查询请求状态后再搜索'), value: 'status' },
       ],
       {
-        placeHolder: 'How would you like to find memories?',
+        placeHolder: L('How would you like to find memories?', '选择查找记忆的方式'),
         ignoreFocusOut: true,
       }
     );
@@ -548,18 +589,20 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
       user_id: vscode.env.machineId || undefined,
       group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
       group_ids: vscode.workspace.name ? [`vscode-${vscode.workspace.name}`] : undefined,
-      top_k: 50,
+      top_k: 100,
       include_metadata: true,
     };
     const searchPayloads = [searchPayload];
     if (searchPayload.group_id) {
       searchPayloads.push({ ...searchPayload, group_id: undefined, group_ids: undefined });
     }
+    searchPayloads.push({ ...searchPayload, user_id: undefined, group_id: undefined, group_ids: undefined });
 
     if (searchMethod.value === 'search') {
       searchTerm = await vscode.window.showInputBox({
-        prompt: 'Enter search term (optional)',
-        placeHolder: 'Type to search memories...',
+      prompt: L('Enter search term (optional)', '输入搜索关键词（可选）'),
+      placeHolder: L('Type to search memories...', '输入关键词搜索记忆'),
+
         ignoreFocusOut: true,
       });
       if (searchTerm === undefined) {
@@ -602,11 +645,11 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
           throw lastStatusErr;
         }
         if (!statusResp && had404) {
-          vscode.window.showInformationMessage(`${EXTENSION_NAME}: request status API not available on this server`);
+          vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${L('request status API not available on this server', '请求状态接口不可用')}`);
         } else {
           const statusData = statusResp?.data?.data || statusResp?.data || {};
           const statusText = statusData.status || 'unknown';
-          vscode.window.showInformationMessage(`${EXTENSION_NAME}: request ${reqId} status = ${statusText}`);
+          vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${L('request', '请求')} ${reqId} ${L('status', '状态')} = ${statusText}`);
         }
       } catch (err) {
         handleError(err, 'Request status');
@@ -617,7 +660,7 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `${EXTENSION_NAME}: Loading memories...`,
+        title: `${EXTENSION_NAME}: ${L('Loading memories...', '正在加载记忆...')}`,
         cancellable: true,
       },
       async (progress, token) => {
@@ -625,8 +668,9 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
 
         let resp: any;
         let lastErr: any;
-        let usedPayload = searchPayloads[0];
-        let usedMethod: 'GET' | 'POST' = 'GET';
+        let had404 = false;
+        let usedPayload: any = searchPayloads[0];
+        let usedMethod: string = 'GET';
         const extractCounts = (data: any) => {
           const responseData = data || {};
           const resultData =
@@ -669,6 +713,7 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
                 const data = err.response?.data;
                 logOutput(`[${EXTENSION_NAME}] search error on ${path} (GET, status ${status ?? 'n/a'})`, data);
                 if (status === 404) {
+                  had404 = true;
                   console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
                   continue;
                 }
@@ -695,6 +740,7 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
                   const data = err.response?.data;
                   logOutput(`[${EXTENSION_NAME}] search error on ${path} (POST, status ${status ?? 'n/a'})`, data);
                   if (status === 404) {
+                    had404 = true;
                     console.warn(`[${EXTENSION_NAME}] ${path} not found, trying next path...`);
                     continue;
                   }
@@ -704,17 +750,48 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
             }
           }
         }
+        if (!resp && had404) {
+          // Fallback: list memories when search endpoint is missing
+          for (const path of memoriesPaths) {
+            try {
+              const listResp = await requestWithRetry(() =>
+                client.get(path, {
+                  params: {
+                    user_id: vscode.env.machineId || undefined,
+                    group_id: vscode.workspace.name ? `vscode-${vscode.workspace.name}` : undefined,
+                    group_ids: vscode.workspace.name ? [`vscode-${vscode.workspace.name}`] : undefined,
+                    memory_type: 'episodic_memory',
+                    page: 1,
+                    page_size: 100,
+                  },
+                })
+              );
+              resp = listResp;
+              usedPayload = { fallback: true };
+              usedMethod = 'GET(memories)';
+              break;
+            } catch (err) {
+              lastErr = err;
+              if (axios.isAxiosError(err) && err.response?.status === 404) {
+                console.warn(`[${EXTENSION_NAME}] ${path} fallback not found, trying next...`);
+                continue;
+              }
+              throw err;
+            }
+          }
+        }
+
         if (!resp && lastErr) {
           throw lastErr;
         }
         if (!resp) {
-          result = { ok: false, message: 'No response from search' };
+          result = { ok: false, message: L('No response from search', '搜索接口无响应') };
           return;
         }
         logOutput(`[${EXTENSION_NAME}] search used payload`, { usedPayload, method: usedMethod });
 
         if (token.isCancellationRequested) {
-          result = { ok: false, message: '已取消' };
+          result = { ok: false, message: L('Cancelled', '已取消') };
           return;
         }
 
@@ -746,7 +823,7 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
               )
               .join('\n');
             const doc = await vscode.workspace.openTextDocument({
-              content: `# ${EXTENSION_NAME} Pending Messages\n\n${mdPending}`,
+              content: `# ${EXTENSION_NAME} ${L('Pending Messages', '待处理消息')}\n\n${mdPending}`,
               language: 'markdown',
             });
             await vscode.window.showTextDocument(doc, {
@@ -754,20 +831,25 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
               preview: true,
               preserveFocus: false,
             });
-            vscode.window.showInformationMessage(`${EXTENSION_NAME}: No extracted memories yet, ${pending.length} pending messages.`);
-            result = { ok: false, message: '尚无已提取记忆' };
+            vscode.window.showInformationMessage(
+              `${EXTENSION_NAME}: ${L('No extracted memories yet, pending messages: ', '尚无已提取记忆，待处理条数：')}${pending.length}`
+            );
+            result = { ok: false, message: L('No extracted memories yet', '尚无已提取记忆') };
             return;
           }
 
-          const message = searchTerm ? `No memories found matching "${searchTerm}"` : 'No memories found';
+          const message = searchTerm
+            ? L(`No memories found matching "${searchTerm}"`, `未找到匹配 "${searchTerm}" 的记忆`)
+            : L('No memories found', '未找到记忆');
           vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${message}`);
           result = { ok: false, message };
           return;
         }
 
         if (!resp) {
-          result = { ok: false, message: 'No response from search' };
-          vscode.window.showWarningMessage(`${EXTENSION_NAME}: No response from search API.`);
+          const msg = L('No response from search', '搜索接口无响应');
+          result = { ok: false, message: msg };
+          vscode.window.showWarningMessage(`${EXTENSION_NAME}: ${msg}`);
           return;
         }
 
@@ -781,7 +863,7 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
           const preview = safeTruncate(content, 100);
 
           return {
-            label: `$(note) ${preview || '(empty content)'}`,
+            label: `$(note) ${preview || L('(empty content)', '（无内容）')}`,
             description: date ? date.toLocaleDateString() + ' ' + date.toLocaleTimeString() : '',
             detail: `ID: ${memoryId}`,
             memory,
@@ -801,34 +883,36 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
         }
 
         const picked = await vscode.window.showQuickPick(pickItems, {
-          placeHolder: 'Select a memory to delete',
+          placeHolder: L('Select a memory to delete', '选择要删除的记忆'),
           ignoreFocusOut: true,
           matchOnDescription: true,
           matchOnDetail: true,
         });
 
         if (!picked) {
-          result = { ok: false, message: '已取消' };
+          result = { ok: false, message: L('Cancelled', '已取消') };
           return;
         }
 
         if (picked.label.startsWith('$(ellipsis)')) {
-          vscode.window.showInformationMessage(`${EXTENSION_NAME}: Pagination not implemented yet`);
-          result = { ok: false, message: '分页未实现' };
+          const msg = L('Pagination not implemented yet', '分页未实现');
+          vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${msg}`);
+          result = { ok: false, message: msg };
           return;
         }
 
         const memory = picked.memory;
         const memoryId = memory.id || memory.memory_id || memory.event_id;
         if (!memoryId) {
-          vscode.window.showErrorMessage(`${EXTENSION_NAME}: Memory ID not found`);
-          result = { ok: false, message: 'Memory ID not found' };
+          const msg = L('Memory ID not found', '未找到记忆 ID');
+          vscode.window.showErrorMessage(`${EXTENSION_NAME}: ${msg}`);
+          result = { ok: false, message: msg };
           return;
         }
 
         const confirmMessage = memory.summary || memory.content
-          ? `Delete memory: "${safeTruncate(memory.summary || memory.content, 50)}"?`
-          : `Delete memory ${memoryId}?`;
+          ? L(`Delete memory: "${safeTruncate(memory.summary || memory.content, 50)}"?`, `删除记忆："${safeTruncate(memory.summary || memory.content, 50)}"？`)
+          : L(`Delete memory ${memoryId}?`, `删除记忆 ${memoryId}？`);
 
         const confirm = await vscode.window.showWarningMessage(
           confirmMessage,
@@ -837,7 +921,7 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
         );
 
         if (confirm !== 'Delete') {
-          result = { ok: false, message: '已取消删除' };
+          result = { ok: false, message: L('Delete cancelled', '已取消删除') };
           return;
         }
 
@@ -905,8 +989,9 @@ export async function handleDeleteMemory(): Promise<ActionResult> {
             }
           );
 
-          vscode.window.showInformationMessage(`${EXTENSION_NAME}: Memory deleted successfully.`, { modal: false });
-          result = { ok: true, message: 'Memory deleted successfully' };
+          const msg = L('Memory deleted successfully', '删除成功');
+          vscode.window.showInformationMessage(`${EXTENSION_NAME}: ${msg}`, { modal: false });
+          result = { ok: true, message: msg };
         } catch (err) {
           handleError(err, 'Delete memory');
           result = { ok: false, message: (err as Error)?.message };

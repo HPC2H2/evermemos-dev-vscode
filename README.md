@@ -3,13 +3,14 @@
 [English version](#evermemos-vs-code-extension-cloud) | [中文](#evermemos-vs-code-插件云端版)
 
 将 EverMem Cloud 直接接入 VS Code：保存/搜索/概览记忆，一键侧边栏操作，命令面板亦可用。
-![Image](screenshot.png)
+https://github.com/user-attachments/assets/c81924dd-5be1-4a26-b780-a949442fd751
 ## 本版变更（官方云端兼容）
 - 路径按配置自动优先：默认云端 `/api/v0/...`，若 `apiBaseUrl` 带 `/api/v1` 则优先 `/api/v1/...`（仍保留 v0 兜底）。
 - 仅保留官方接口集：POST/GET/DELETE `/api/{v0|v1}/memories`，GET `/api/{v0|v1}/memories/search`。
 - 侧边栏新增 Auth Token 输入（自托管/旧版可用），Key/Token 都支持。
-- 搜索/删除 `user_id` 自动填入，`group_id` 可选（来自工作区名）。
+- 搜索/删除 `user_id` 自动填入，`group_id` 可选（来自工作区名），`top_k` 提升到 100 以方便读旧会话。
 - 项目概览展示 `request_id`，方便配合删除/状态查询。
+- 健康检查+鉴权探针：假 Key 将显示不可用，不再误报连接成功。
 
 ## 功能速览
 - 侧边栏卡片式 UI：填 Key、测试连接、保存记忆、搜索/回顾、项目概览、删除记忆、日志回显。
@@ -27,7 +28,7 @@ npm run compile
 ## 配置 API Key
 1) GUI：设置中搜索 `evermem.apiKey`（或在侧边栏 Cloud API 卡片直接填写/保存），`evermem.apiBaseUrl` 默认 `https://api.evermind.ai`。
 2) 环境变量（可选）：`export EVERMEM_API_KEY="<你的APIKey>"` 后从同一终端启动 VS Code。
-API Key 在 [console.evermind.ai](https://console.evermind.ai) 获取（示例：`111111f9-199a-4665-ad1c-111111111111`）。
+API Key 在 [console.evermind.ai](https://console.evermind.ai) 获取（示例：` 46b7d3f9-199a-4665-ad1c-6495e1945fd7`）。
 
 ## 侧边栏使用（推荐路径）
 1. 点「测试连接」确认联通。
@@ -80,8 +81,9 @@ Bring EverMem Cloud into VS Code: save/search/overview memories from the sidebar
 - Path preference honors config: default to `/api/v0/...`; if `apiBaseUrl` ends with `/api/v1`, v1 paths are tried first (v0 kept as fallback).
 - Only official endpoints kept: POST/GET/DELETE `/api/{v0|v1}/memories`, GET `/api/{v0|v1}/memories/search`.
 - Sidebar now accepts Auth Token (self-hosted/legacy); API Key or Token both supported.
-- `user_id` auto-filled; `group_id` optional (derived from workspace name).
+- `user_id` auto-filled; `group_id` optional (derived from workspace name); `top_k` raised to 100 to surface older sessions.
 - Project Overview shows `request_id` to pair with delete/status checks.
+- Health + auth probe: fake API keys will fail connection tests instead of reporting success.
 
 ## Features
 - Card-style sidebar: set API, test connection, save memory, search/recap, project overview, delete, and recent logs.
@@ -99,7 +101,7 @@ Debug locally: press `F5` in VS Code to launch an Extension Development Host, th
 ## Configure API Key
 1) GUI: search `evermem.apiKey` in Settings (or fill/save in the Cloud API card). `evermem.apiBaseUrl` defaults to `https://api.evermind.ai`.
 2) Env var (optional): `export EVERMEM_API_KEY="<your API key>"` before launching VS Code from the same shell.
-Get your key from [console.evermind.ai](https://console.evermind.ai) (example: `111111f9-199a-4665-ad1c-111111111111`).
+Get your key from [console.evermind.ai](https://console.evermind.ai) (example: ` 46b7d3f9-199a-4665-ad1c-6495e1945fd7`).
 
 ## Sidebar Flow (recommended)
 1. Click **Test Connection**.
