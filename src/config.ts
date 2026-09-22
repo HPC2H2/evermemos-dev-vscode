@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
+import axios, { AxiosInstance } from 'axios';
+import { t } from './i18n';
 
 export interface EvermemConfig {
   apiBaseUrl: string;
@@ -7,78 +8,42 @@ export interface EvermemConfig {
   authToken?: string;
 }
 
-export interface ApiResponse<T = any> {
-  success: boolean;
-  data?: T;
-  message?: string;
-  error?: string;
-  status?: number;
-}
-
-export interface ActionResult<T = any> {
+export interface ActionResult<T = unknown> {
   ok: boolean;
+  cancelled?: boolean;
   message?: string;
   data?: T;
 }
-
-export type SidebarActionPayload =
-  | { type: 'addMemory'; payload?: { text?: string; note?: string; useSelection?: boolean } }
-  | { type: 'quickRecap'; payload?: { query?: string } }
-  | { type: 'projectOverview' }
-  | { type: 'deleteMemory' }
-  | { type: 'testConnection' }
-  | { type: 'openSettings' };
 
 export const DEFAULT_API_BASE_URL = 'https://api.evermind.ai';
 export const API_PATHS = {
-  // Cloud default v0; include v1 for local/self-hosted
   MEMORIES: ['/api/v0/memories', '/api/v1/memories', '/api/memories', '/memories'],
   MEMORIES_SEARCH: ['/api/v0/memories/search', '/api/v1/memories/search'],
-  MEMORIES_DELETE: ['/api/v0/memories', '/api/v1/memories', '/api/memories', '/memories'],
-  CONVERSATION_META: ['/api/v0/memories/conversation-meta', '/api/v1/memories/conversation-meta', '/api/memories/conversation-meta', '/memories/conversation-meta'],
   REQUEST_STATUS: ['/api/v1/stats/request', '/api/v0/stats/request', '/api/stats/request', '/stats/request'],
-  HEALTH: ['/api/health', '/health', '/'],
 } as const;
 
-const isV1Path = (p: string) => /\/api\/v1\//i.test(p) || /\/v1$/i.test(p);
-const isV0Path = (p: string) => /\/api\/v0\//i.test(p) || /\/v0$/i.test(p);
 export function getPreferredApiVersion(apiBaseUrl: string): 'v0' | 'v1' {
-  const match = apiBaseUrl?.match(/\/api\/(v\d+)/i);
-  if (match && match[1]?.toLowerCase() === 'v1') {
-    return 'v1';
-  }
-  return 'v0';
+  return /\/api\/v1(?:\/|$)/i.test(apiBaseUrl) ? 'v1' : 'v0';
 }
-export function orderPaths(paths: readonly string[], preferred: 'v0' | 'v1') {
-  const scored = paths.map((p) => {
-    const score = preferred === 'v1' ? (isV1Path(p) ? 0 : isV0Path(p) ? 1 : 2) : isV0Path(p) ? 0 : isV1Path(p) ? 1 : 2;
-    return { p, score };
-  });
-  scored.sort((a, b) => a.score - b.score);
-  const unique: string[] = [];
-  scored.forEach(({ p }) => {
-    if (!unique.includes(p)) {
-      unique.push(p);
-    }
-  });
-  return unique;
+
+export function orderPaths(paths: readonly string[], preferred: 'v0' | 'v1'): string[] {
+  const score = (path: string) => path.includes(`/api/${preferred}/`) ? 0 : /\/api\/v[01]\//.test(path) ? 1 : 2;
+  return [...new Set(paths)].sort((a, b) => score(a) - score(b));
 }
 
 export const EXTENSION_NAME = 'EverMemOS';
 export const EXTENSION_ID = 'evermem';
 export const outputChannel = vscode.window.createOutputChannel(EXTENSION_NAME);
 
-export function logOutput(message: string, data?: any) {
-  const text = data !== undefined ? `${message} ${JSON.stringify(data, null, 2)}` : message;
-  outputChannel.appendLine(text);
+// Do not log authorization headers, captured code, or full server responses.
+export function logOutput(message: string, data?: unknown): void {
+  outputChannel.appendLine(data === undefined ? message : `${message} ${JSON.stringify(data)}`);
 }
 
 export function createClient(config: EvermemConfig): AxiosInstance {
-  const trimmedBase = (config.apiBaseUrl || DEFAULT_API_BASE_URL).trim().replace(/\/+$/, '');
-  const baseURL = trimmedBase.replace(/\/api(?:\/v\d+)?$/, '');
+  const baseURL = (config.apiBaseUrl || DEFAULT_API_BASE_URL).trim().replace(/\/+$/, '').replace(/\/api(?:\/v\d+)?$/i, '');
   const authValue = config.apiKey || config.authToken;
-
-  const instance = axios.create({
+  return axios.create({
     baseURL,
     timeout: 30000,
     headers: {
@@ -88,165 +53,140 @@ export function createClient(config: EvermemConfig): AxiosInstance {
       'User-Agent': `${EXTENSION_NAME}/VSCode`,
     },
   });
+}
 
-  instance.interceptors.request.use(
-    (request) => {
-      if (authValue) {
-        request.headers = request.headers ?? {};
-        request.headers['Authorization'] = `Bearer ${authValue}`;
-      }
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`[EverMemOS] Request: ${request.method?.toUpperCase()} ${request.baseURL}${request.url}`);
-      }
-      return request;
-    },
-    (error) => {
-      console.error('[EverMemOS] Request interceptor error:', error);
-      return Promise.reject(error);
-    }
-  );
+export function throwIfCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new vscode.CancellationError();
+  }
+}
 
-  instance.interceptors.response.use(
-    (response) => {
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`[EverMemOS] Response: ${response.status} ${response.config.url}`);
-      }
-      return response;
-    },
-    (error: AxiosError) => {
-      console.error('[EverMemOS] Response error:', {
-        url: error.config?.url,
-        method: error.config?.method,
-        status: error.response?.status,
-        message: error.message,
-      });
-      return Promise.reject(error);
-    }
-  );
+export function isCancelled(error: unknown): boolean {
+  return error instanceof vscode.CancellationError || axios.isCancel(error);
+}
 
-  return instance;
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfCancelled(signal);
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      reject(new vscode.CancellationError());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 export async function requestWithRetry<T>(
-  requestFn: () => Promise<T>,
-  maxRetries = 2,
-  baseDelay = 1000
+  requestFn: () => Promise<T>, maxRetries = 2, baseDelay = 1000, signal?: AbortSignal
 ): Promise<T> {
-  let lastError: any;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; ; attempt++) {
+    throwIfCancelled(signal);
     try {
-      return await requestFn();
-    } catch (err) {
-      lastError = err;
-      const code = (err as any)?.code;
-      const hasResponse = (err as any)?.response;
-      const isAxiosNetwork = axios.isAxiosError(err) && (
-        !err.response ||
-        code === 'ECONNABORTED' ||
-        code === 'ECONNREFUSED'
-      );
-      const isGenericNetwork = !axios.isAxiosError(err) && !hasResponse && (code === 'ECONNABORTED' || code === 'ECONNREFUSED');
-      const isNetworkError = isAxiosNetwork || isGenericNetwork;
-      if (isNetworkError && attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(2, attempt);
-        console.log(`[EverMemOS] Retry attempt ${attempt + 1}/${maxRetries} after ${delay}ms`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
+      const result = await requestFn();
+      throwIfCancelled(signal);
+      return result;
+    } catch (error) {
+      throwIfCancelled(signal);
+      if (isCancelled(error)) {
+        throw error;
       }
-      break;
+      const code = (error as { code?: string })?.code;
+      const networkFailure = axios.isAxiosError(error)
+        ? !error.response && ['ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ERR_NETWORK'].includes(code || '')
+        : code === 'ECONNREFUSED' || code === 'ECONNABORTED';
+      if (!networkFailure || attempt >= maxRetries) {
+        throw error;
+      }
+      await delay(baseDelay * 2 ** attempt, signal);
     }
   }
-  throw lastError;
 }
 
-export function getConfig(): EvermemConfig | null {
-  const cfg = vscode.workspace.getConfiguration(EXTENSION_ID);
-  const apiBaseUrl = (cfg.get<string>('apiBaseUrl', DEFAULT_API_BASE_URL) || DEFAULT_API_BASE_URL).trim();
-  const apiKeySetting = cfg.get<string>('apiKey', '')?.trim();
-  const authTokenSetting = cfg.get<string>('authToken', '')?.trim();
-  const envApiKey = process.env.EVERMEM_API_KEY?.trim();
-  const apiKey = apiKeySetting || envApiKey || authTokenSetting;
-
-  if (!apiBaseUrl) {
-    vscode.window
-      .showErrorMessage(
-        `${EXTENSION_NAME}: API base URL is not configured. Please set "${EXTENSION_ID}.apiBaseUrl" in settings.`,
-        'Open Settings'
-      )
-      .then((selection) => {
-        if (selection === 'Open Settings') {
-          vscode.commands.executeCommand('workbench.action.openSettings', `${EXTENSION_ID}.apiBaseUrl`);
-        }
-      });
-    return null;
+export async function withCancellation<T>(token: vscode.CancellationToken, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const subscription = token.onCancellationRequested(() => controller.abort());
+  if (token.isCancellationRequested) {
+    controller.abort();
   }
-
   try {
-    new URL(apiBaseUrl);
-  } catch (error) {
-    vscode.window
-      .showErrorMessage(
-        `${EXTENSION_NAME}: Invalid API base URL format. Please check your settings.`,
-        'Open Settings'
-      )
-      .then((selection) => {
-        if (selection === 'Open Settings') {
-          vscode.commands.executeCommand('workbench.action.openSettings', `${EXTENSION_ID}.apiBaseUrl`);
-        }
-      });
-    return null;
+    throwIfCancelled(controller.signal);
+    return await fn(controller.signal);
+  } finally {
+    subscription.dispose();
   }
+}
 
-  if (!apiKey) {
-    vscode.window
-      .showErrorMessage(
-        `${EXTENSION_NAME}: 缺少 API Key，请在设置中配置 "${EXTENSION_ID}.apiKey" 或设置环境变量 EVERMEM_API_KEY。`,
-        'Open Settings'
-      )
-      .then((selection) => {
-        if (selection === 'Open Settings') {
-          vscode.commands.executeCommand('workbench.action.openSettings', `${EXTENSION_ID}.apiKey`);
-        }
-      });
-    return null;
-  }
-
+export function readConfig(): EvermemConfig {
+  const cfg = vscode.workspace.getConfiguration(EXTENSION_ID);
   return {
-    apiBaseUrl,
-    apiKey,
-    authToken: authTokenSetting || undefined,
+    apiBaseUrl: (cfg.get<string>('apiBaseUrl', DEFAULT_API_BASE_URL) || DEFAULT_API_BASE_URL).trim(),
+    apiKey: cfg.get<string>('apiKey', '').trim() || process.env.EVERMEM_API_KEY?.trim(),
+    authToken: cfg.get<string>('authToken', '').trim() || undefined,
   };
 }
 
-export async function testConnection(config: EvermemConfig): Promise<boolean> {
-  const client = createClient(config);
-  const preferred = getPreferredApiVersion(config.apiBaseUrl);
-  const healthPaths = orderPaths(API_PATHS.HEALTH, preferred);
-  for (const path of healthPaths) {
-    try {
-      const response = await requestWithRetry<AxiosResponse>(() => client.get(path, { timeout: 5000 }));
-      if (response.status < 500) {
-        // proceed to auth check
-        break;
-      }
-    } catch (error) {
-      // try next
+export function configError(config: EvermemConfig): string | undefined {
+  try {
+    const url = new URL(config.apiBaseUrl);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      return t('invalidUrl');
     }
+  } catch {
+    return t('invalidUrl');
   }
-  // auth check: try a lightweight GET /memories with user_id
-  const probeParams = { user_id: vscode.env.machineId || undefined, top_k: 1 } as Record<string, any>;
-  const memPaths = orderPaths(API_PATHS.MEMORIES, preferred);
-  for (const path of memPaths) {
+  return config.apiKey || config.authToken ? undefined : t('missingKey');
+}
+
+export function getConfig(): EvermemConfig | null {
+  const config = readConfig();
+  const error = configError(config);
+  if (error) {
+    const action = t('openSettings');
+    void vscode.window.showErrorMessage(`${EXTENSION_NAME}: ${error}`, action).then((choice) => {
+      if (choice === action) {
+        void vscode.commands.executeCommand('workbench.action.openSettings', EXTENSION_ID);
+      }
+    });
+    return null;
+  }
+  return config;
+}
+
+export async function testConnection(config: EvermemConfig, signal?: AbortSignal): Promise<boolean> {
+  const client = createClient(config);
+  for (const path of orderPaths(API_PATHS.MEMORIES, getPreferredApiVersion(config.apiBaseUrl))) {
+    throwIfCancelled(signal);
     try {
-      const resp = await requestWithRetry<AxiosResponse>(() => client.get(path, { params: probeParams, timeout: 5000 }));
-      if (resp.status < 500) {
-        return true;
+      const response = await client.get(path, {
+        params: { user_id: vscode.env.machineId || 'vscode-user', top_k: 1, page: 1, page_size: 1 },
+        timeout: 5000,
+        signal,
+      });
+      throwIfCancelled(signal);
+      let data: unknown = response.data;
+      for (let depth = 0; depth < 4; depth++) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) { return false; }
+        const result = data as Record<string, unknown>;
+        if (result.success === false || result.status === 'error' || result.status === 'failed') { return false; }
+        const nested = result.result ?? result.data;
+        if (!nested || typeof nested !== 'object' || Array.isArray(nested)) { return true; }
+        data = nested;
       }
+      return false;
     } catch (error) {
-      if (axios.isAxiosError(error) && (error.response?.status === 401 || error.response?.status === 403)) {
-        return false;
+      throwIfCancelled(signal);
+      if (isCancelled(error)) {
+        throw error;
       }
-      // try next path
+      if (axios.isAxiosError(error) && [404, 405].includes(error.response?.status || 0)) {
+        continue;
+      }
+      return false;
     }
   }
   return false;

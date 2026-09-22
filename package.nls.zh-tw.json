@@ -1,0 +1,12 @@
+{
+  "extension.description": "在 VS Code 中儲存、搜尋及回顧 EverMemOS 記憶。",
+  "view.name": "EverMemOS 雲端",
+  "command.addMemory": "新增記憶",
+  "command.quickRecap": "快速回顧",
+  "command.projectOverview": "專案概覽",
+  "command.deleteMemory": "刪除記憶",
+  "command.openSidebar": "開啟側邊欄",
+  "config.apiBaseUrl": "EverMemOS API 的基礎網址。",
+  "config.apiKey": "在 console.evermind.ai 取得的 API Key，也支援 `EVERMEM_API_KEY` 環境變數。",
+  "config.authToken": "舊版自架服務的選填權杖，使用 API Key 時可留空。"
+}

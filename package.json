@@ -1,7 +1,7 @@
 {
   "name": "evermemos-dev-vscode",
   "displayName": "EverMemOS for VS Code",
-  "description": "Integrate EverMemOS into VS Code, offering one‑click memory capture, quick recap, project overview, and easy deletion of stored memories directly from the editor.",
+  "description": "%extension.description%",
   "version": "0.1.0",
   "publisher": "HPC2H2",
   "license": "MIT",
@@ -34,7 +34,7 @@
       "evermemViewContainer": [
         {
           "id": "evermem.configView",
-          "name": "EverMemOS Cloud",
+          "name": "%view.name%",
           "type": "webview"
         }
       ]
@@ -42,27 +42,27 @@
     "commands": [
       {
         "command": "evermem.addMemory",
-        "title": "EverMemOS: Add Memory",
+        "title": "%command.addMemory%",
         "category": "EverMemOS"
       },
       {
         "command": "evermem.quickRecap",
-        "title": "EverMemOS: Quick Recap",
+        "title": "%command.quickRecap%",
         "category": "EverMemOS"
       },
       {
         "command": "evermem.projectOverview",
-        "title": "EverMemOS: Project Overview",
+        "title": "%command.projectOverview%",
         "category": "EverMemOS"
       },
       {
         "command": "evermem.deleteMemory",
-        "title": "EverMemOS: Delete Memory",
+        "title": "%command.deleteMemory%",
         "category": "EverMemOS"
       },
       {
         "command": "evermem.openSidebar",
-        "title": "EverMemOS: Open Sidebar",
+        "title": "%command.openSidebar%",
         "category": "EverMemOS"
       }
     ],
@@ -86,17 +86,17 @@
         "evermem.apiBaseUrl": {
           "type": "string",
           "default": "https://api.evermind.ai",
-          "description": "Base URL of EverMem Cloud API (default: https://api.evermind.ai)"
+          "description": "%config.apiBaseUrl%"
         },
         "evermem.apiKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "EverMem Cloud API Key（console.evermind.ai 获取）。支持环境变量 `EVERMEM_API_KEY`。示例：` 46b7d3f9-199a-4665-ad1c-6495e1945fd7`"
+          "markdownDescription": "%config.apiKey%"
         },
         "evermem.authToken": {
           "type": "string",
           "default": "",
-          "markdownDescription": "(可选) 旧版自托管 Token，若已配置 apiKey 可留空。"
+          "markdownDescription": "%config.authToken%"
         }
       }
     }
@@ -110,26 +110,28 @@
     "package": "npm run check-types && npm run lint && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "pretest": "npm run compile",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
-    "test": "npm run compile-tests && node ./out/test/runTest.js"
+    "test": "npm run test:unit && node ./out/test/runTest.js",
+    "test:unit": "npm run compile-tests && node --test test/*.test.cjs"
   },
   "dependencies": {
     "axios": "^1.7.2",
-    "uuid": "^13.0.0"
+    "highlight.js": "^11.12.0"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^25.2.3",
-    "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.109.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
+    "mocha": "^12.0.2",
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.54.0"
-  }
+  },
+  "l10n": "./l10n"
 }

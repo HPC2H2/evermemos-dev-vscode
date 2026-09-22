@@ -1,360 +1,172 @@
 import * as vscode from 'vscode';
-import {
-  DEFAULT_API_BASE_URL,
-  EXTENSION_ID,
-  EXTENSION_NAME,
-  SidebarActionPayload,
-} from './config';
+import { ActionResult, DEFAULT_API_BASE_URL, EXTENSION_ID, configError } from './config';
+import { AddMemoryOptions } from './commands';
+import { record } from './api';
+import { htmlLanguage, t } from './i18n';
+import { escapeHtml as esc, nonce, sharedStyles } from './webview';
 
 interface SidebarActions {
-  testConnection: () => Promise<boolean>;
-  addMemory: (payload?: { text?: string; note?: string; useSelection?: boolean }) => Promise<any>;
-  quickRecap: (payload?: { query?: string; openDocument?: boolean }) => Promise<any>;
-  projectOverview: (payload?: { openDocument?: boolean }) => Promise<any>;
-  deleteMemory: () => Promise<any>;
+  testConnection: () => Promise<ActionResult>;
+  addMemory: (payload?: AddMemoryOptions) => Promise<ActionResult>;
+  quickRecap: (payload?: { query?: string }) => Promise<ActionResult>;
+  projectOverview: () => Promise<ActionResult>;
+  deleteMemory: () => Promise<ActionResult>;
 }
 
-export class EvermemConfigViewProvider implements vscode.WebviewViewProvider {
-  public static readonly viewId = 'evermem.configView';
+export class EvermemConfigViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
+  static readonly viewId = 'evermem.configView';
   private view?: vscode.WebviewView;
+  private readonly disposables: vscode.Disposable[] = [];
+  private busy = false;
+  private configRevision = 0;
 
-  constructor(private readonly _context: vscode.ExtensionContext, private readonly actions: SidebarActions) {
-    void this._context;
+  constructor(private readonly actions: SidebarActions) {
+    this.disposables.push(vscode.workspace.onDidChangeConfiguration(event => {
+      if (event.affectsConfiguration(EXTENSION_ID)) { this.configRevision++; this.sendConfig(); }
+    }));
   }
 
-  public postMessage(message: any) {
-    this.view?.webview.postMessage(message);
+  dispose(): void { this.disposables.forEach(item => item.dispose()); }
+  private post(message: unknown): void { void this.view?.webview.postMessage(message); }
+  private sendConfig(): void {
+    const config = vscode.workspace.getConfiguration(EXTENSION_ID);
+    this.post({ type: 'config', data: {
+      apiBaseUrl: config.get('apiBaseUrl', DEFAULT_API_BASE_URL), apiKey: config.get('apiKey', ''), authToken: config.get('authToken', ''),
+    } });
   }
 
-  resolveWebviewView(webviewView: vscode.WebviewView) {
-    this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-    };
+  resolveWebviewView(view: vscode.WebviewView): void {
+    this.view = view;
+    view.webview.options = { enableScripts: true, localResourceRoots: [] };
+    const subscription = view.webview.onDidReceiveMessage(message => this.receive(message));
+    view.onDidDispose(() => { subscription.dispose(); if (this.view === view) { this.view = undefined; } });
+    view.webview.html = this.getHtml();
+  }
 
-    const config = vscode.workspace.getConfiguration('evermem');
-    const initial = {
-      apiBaseUrl: config.get<string>('apiBaseUrl') || DEFAULT_API_BASE_URL,
-      apiKey: config.get<string>('apiKey') || '',
-      authToken: config.get<string>('authToken') || '',
-      workspace: vscode.workspace.name || 'Workspace',
-    };
-    const locale = (vscode.env.language || 'en').toLowerCase();
-    const isZh = locale.startsWith('zh');
-    const text = this.getStrings(isZh);
-
-    webviewView.webview.html = this.getHtml(webviewView.webview, initial, text);
-
-    webviewView.webview.onDidReceiveMessage(async (msg: SidebarActionPayload | any) => {
-      if (!msg?.type) {
-        return;
-      }
-
+  private async receive(message: unknown): Promise<void> {
+    const msg = record(message);
+    if (msg.type === 'ready') { this.sendConfig(); this.post({ type: 'busy', busy: this.busy }); return; }
+    if (msg.type === 'openSettings') { await vscode.commands.executeCommand('workbench.action.openSettings', EXTENSION_ID); return; }
+    if (this.busy || !['saveConfig', 'action'].includes(String(msg.type))) { return; }
+    this.busy = true;
+    this.post({ type: 'busy', busy: true, connecting: msg.action === 'testConnection' });
+    const revision = this.configRevision;
+    try {
       if (msg.type === 'saveConfig') {
-        const payload = msg.data || {};
-        const cfg = vscode.workspace.getConfiguration('evermem');
-        await cfg.update('apiBaseUrl', payload.apiBaseUrl || DEFAULT_API_BASE_URL, true);
-        await cfg.update('apiKey', payload.apiKey || '', true);
-        await cfg.update('authToken', payload.authToken || '', true);
-        vscode.window.showInformationMessage(text.toastConfigSaved);
-        this.postMessage({ type: 'toast', level: 'success', message: text.toastConfigSaved });
-        return;
-      }
-
-      if (msg.type === 'openSettings') {
-        vscode.commands.executeCommand('workbench.action.openSettings', EXTENSION_ID);
-        return;
-      }
-
-      if (msg.type === 'action') {
-        const action = msg.action as SidebarActionPayload['type'];
-        try {
-          if (action === 'testConnection') {
-            const ok = await this.actions.testConnection();
-            this.postMessage({ type: 'connection', ok });
-            vscode.window.showInformationMessage(ok ? text.connectionOk : text.connectionFail);
-            return;
-          }
-          if (action === 'addMemory') {
-            const res = await this.actions.addMemory({
-              text: msg.payload?.text,
-              note: msg.payload?.note,
-              useSelection: msg.payload?.useSelection !== false,
-            });
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.addMemoryDone });
-            return;
-          }
-          if (action === 'quickRecap') {
-            const res = await this.actions.quickRecap({ query: msg.payload?.query, openDocument: true });
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.quickRecapDone });
-            return;
-          }
-          if (action === 'projectOverview') {
-            const res = await this.actions.projectOverview({ openDocument: true });
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.overviewDone });
-            return;
-          }
-          if (action === 'deleteMemory') {
-            const res = await this.actions.deleteMemory();
-            this.postMessage({ type: 'actionResult', action, ok: !!res?.ok, message: res?.message || text.deleteDone });
-            return;
-          }
-        } catch (error) {
-          vscode.window.showErrorMessage(`${EXTENSION_NAME}: ${action} failed`);
-          this.postMessage({ type: 'actionResult', action, ok: false, message: (error as Error)?.message || text.actionFailed });
+        const data = record(msg.data);
+        if (typeof data.apiBaseUrl !== 'string' || typeof data.apiKey !== 'string' || typeof data.authToken !== 'string') { throw new Error(t('configMissing')); }
+        const values = { apiBaseUrl: data.apiBaseUrl.trim() || DEFAULT_API_BASE_URL, apiKey: data.apiKey.trim(), authToken: data.authToken.trim() };
+        // Permit clearing credentials, but validate the URL before writing any setting.
+        const error = configError({ ...values, apiKey: 'validation-only' });
+        if (error) { throw new Error(error); }
+        const cfg = vscode.workspace.getConfiguration(EXTENSION_ID);
+        const workspaceConfig = Object.keys(values).some(key => cfg.inspect(key)?.workspaceValue !== undefined);
+        const target = workspaceConfig ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+        for (const [key, value] of Object.entries(values)) {
+          if (cfg.get(key) !== value) { await cfg.update(key, value, target); }
         }
+        this.sendConfig();
+        this.post({ type: 'result', ok: true, message: t('configSaved') });
+        return;
       }
-    });
-  }
-
-  private getStrings(isZh: boolean) {
-    if (isZh) {
-      return {
-        lang: 'zh-CN',
-        heroSubtitle: '云端记忆捕获 · 快捷搜索 · 项目概览',
-        statusPending: '待检测',
-        statusOk: '已连接',
-        statusFail: '未连接',
-        apiCard: 'Cloud API',
-        testConnection: '测试连接',
-        apiBaseLabel: 'API Base URL',
-        apiKeyLabel: 'API Key（console.evermind.ai 获取，例如 46b7d3f9-199a-4665-ad1c-6495e1945fd7）',
-        apiKeyPlaceholder: '粘贴你的 EverMem API Key',
-        authTokenLabel: 'Auth Token（可选，用于自托管或旧版）',
-        authTokenPlaceholder: '可选：粘贴自托管 Token',
-        save: '保存',
-        openSettings: '打开设置',
-        envHint: '支持 EVERMEM_API_KEY（云 v0），本地自托管可用 Token；默认指向 https://api.evermind.ai',
-        quickOps: '快速操作',
-        quickOpsHint: '使用选区或自定义文本',
-        memoryLabel: '添加记忆（留空则使用当前文件/选区）',
-        memoryPlaceholder: '可选：直接在此粘贴要保存的内容',
-        noteLabel: '可选备注',
-        notePlaceholder: '例如：这段代码初始化了配置',
-        useSelection: '优先使用当前选区/文件',
-        saveMemory: '保存记忆',
-        searchLabel: '搜索 / 快速回顾',
-        searchPlaceholder: '输入关键词，留空查看最近记忆',
-        search: '搜索',
-        overview: '项目概览',
-        delete: '删除记忆',
-        logTitle: '状态 / 日志',
-        logHint: '最近 12 条',
-        welcome: '欢迎使用 EverMemOS Cloud',
-        toastConfigSaved: '配置已保存',
-        connectionOk: `${EXTENSION_NAME}: Cloud API 可用`,
-        connectionFail: `${EXTENSION_NAME}: 无法连接 Cloud API`,
-        addMemoryDone: '记忆已提交',
-        quickRecapDone: '已完成搜索/回顾',
-        overviewDone: '项目概览已生成',
-        deleteDone: '删除流程完成',
-        actionFailed: '操作失败',
-        toastDefault: '完成',
-        heroEyebrow: 'EverMem Cloud',
-        heroTitle: 'EverMemOS',
-      };
+      const payload = record(msg.payload);
+      let result: ActionResult;
+      switch (msg.action) {
+        case 'testConnection': result = await this.actions.testConnection(); break;
+        case 'addMemory':
+          result = await this.actions.addMemory({ text: typeof payload.text === 'string' ? payload.text : undefined,
+            note: typeof payload.note === 'string' ? payload.note : '', useSelection: payload.useSelection !== false }); break;
+        case 'quickRecap': result = await this.actions.quickRecap({ query: typeof payload.query === 'string' ? payload.query : '' }); break;
+        case 'projectOverview': result = await this.actions.projectOverview(); break;
+        case 'deleteMemory': result = await this.actions.deleteMemory(); break;
+        default: return;
+      }
+      this.post({ type: 'result', ...result, connection: msg.action === 'testConnection' && revision === this.configRevision });
+    } catch (error) {
+      this.post({ type: 'result', ok: false, message: error instanceof Error ? error.message : t('actionFailed') });
+    } finally {
+      this.busy = false;
+      this.post({ type: 'busy', busy: false });
     }
-    return {
-      lang: 'en',
-      heroSubtitle: 'Cloud memory capture · Quick search · Project overview',
-      statusPending: 'Pending',
-      statusOk: 'Connected',
-      statusFail: 'Offline',
-      apiCard: 'Cloud API',
-      testConnection: 'Test Connection',
-      apiBaseLabel: 'API Base URL',
-      apiKeyLabel: 'API Key (from console.evermind.ai, e.g. 46b7d3f9-199a-4665-ad1c-6495e1945fd7)',
-      apiKeyPlaceholder: 'Paste your EverMem API Key',
-      authTokenLabel: 'Auth Token (optional, self-hosted/legacy)',
-      authTokenPlaceholder: 'Optional: paste self-hosted token',
-      save: 'Save',
-      openSettings: 'Open Settings',
-      envHint: 'Supports EVERMEM_API_KEY (cloud v0); self-hosted can use auth token. Default https://api.evermind.ai',
-      quickOps: 'Quick Actions',
-      quickOpsHint: 'Use selection or custom text',
-      memoryLabel: 'Save memory (blank uses current file/selection)',
-      memoryPlaceholder: 'Optional: paste content to store',
-      noteLabel: 'Optional note',
-      notePlaceholder: 'e.g., This code initializes config',
-      useSelection: 'Prefer current selection/file',
-      saveMemory: 'Save Memory',
-      searchLabel: 'Search / Quick Recap',
-      searchPlaceholder: 'Keyword (blank shows recent memories)',
-      search: 'Search',
-      overview: 'Project Overview',
-      delete: 'Delete Memory',
-      logTitle: 'Status / Logs',
-      logHint: 'Latest 12',
-      welcome: 'Welcome to EverMemOS Cloud',
-      toastConfigSaved: 'Config saved',
-      connectionOk: `${EXTENSION_NAME}: Cloud API reachable`,
-      connectionFail: `${EXTENSION_NAME}: Cannot reach Cloud API`,
-      addMemoryDone: 'Memory submitted',
-      quickRecapDone: 'Search/recap completed',
-      overviewDone: 'Project overview generated',
-      deleteDone: 'Delete flow finished',
-      actionFailed: 'Action failed',
-      toastDefault: 'Done',
-      heroEyebrow: 'EverMem Cloud',
-      heroTitle: 'EverMemOS',
-    };
   }
 
-  private getHtml(_webview: vscode.Webview, initial: Record<string, string>, text: ReturnType<typeof this.getStrings>): string {
-    const style = `
-      :root { color-scheme: light dark; }
-      body { font-family: var(--vscode-font-family); padding: 14px; background: var(--vscode-sideBar-background); color: var(--vscode-foreground); }
-      .hero { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border: 1px solid var(--vscode-panel-border); border-radius: 10px; background: linear-gradient(135deg, var(--vscode-editor-background), var(--vscode-editor-background)); margin-bottom: 12px; }
-      .eyebrow { color: var(--vscode-descriptionForeground); text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; }
-      h2 { margin: 2px 0 6px; }
-      .badge { padding: 4px 8px; border-radius: 100px; border: 1px solid var(--vscode-editorWidget-border); font-size: 12px; }
-      .badge.ok { background: rgba(76, 175, 80, 0.15); color: #64dd17; border-color: rgba(76, 175, 80, 0.25); }
-      .badge.fail { background: rgba(244, 67, 54, 0.15); color: #ff867c; border-color: rgba(244, 67, 54, 0.25); }
-      .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
-      .card { border: 1px solid var(--vscode-editorWidget-border); border-radius: 10px; padding: 12px; background: var(--vscode-editor-background); box-shadow: 0 6px 16px rgba(0,0,0,0.08); }
-      .card header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; margin-bottom: 6px; }
-      label { display: block; font-weight: 600; margin: 8px 0 4px; }
-      input, textarea { width: 100%; padding: 8px; box-sizing: border-box; border-radius: 8px; border: 1px solid var(--vscode-input-border); background: var(--vscode-input-background); color: var(--vscode-foreground); }
-      textarea { min-height: 70px; resize: vertical; }
-      button { cursor: pointer; border-radius: 8px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 8px 10px; }
-      button.secondary { background: transparent; border-color: var(--vscode-input-border); color: var(--vscode-foreground); }
-      button.ghost { background: transparent; border-color: transparent; color: var(--vscode-foreground); }
-      .row { display: flex; gap: 8px; align-items: center; }
-      .row input[type="text"], .row input[type="password"] { flex: 1; }
-      .hint { color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 4px; }
-      ul#feed { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
-      ul#feed li { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editor-background); font-size: 12px; }
-      ul#feed li.ok { border-color: rgba(76, 175, 80, 0.35); }
-      ul#feed li.err { border-color: rgba(244, 67, 54, 0.35); }
-    `;
-
-    const script = `
-      const vscodeApi = acquireVsCodeApi();
-      const qs = (id) => document.getElementById(id);
-      const feed = qs('feed');
-      const conn = qs('conn');
-      const t = ${JSON.stringify(text)};
-      const setConn = (ok, textOverride) => { conn.textContent = ok ? (textOverride || t.statusOk) : (textOverride || t.statusFail); conn.className = 'badge ' + (ok ? 'ok' : 'fail'); };
-      const push = (level, message) => { const li = document.createElement('li'); li.className = level === 'error' ? 'err' : 'ok'; const ts = new Date().toLocaleTimeString(); li.textContent = '[' + ts + '] ' + message; feed.prepend(li); while (feed.children.length > 12) { feed.removeChild(feed.lastChild); } };
-
-      // init text values
-      qs('heroSubtitle').textContent = t.heroSubtitle;
-      conn.textContent = t.statusPending;
-      qs('apiCardTitle').textContent = t.apiCard;
-      qs('testBtn').textContent = t.testConnection;
-      qs('apiBaseLabel').textContent = t.apiBaseLabel;
-      qs('apiKeyLabel').textContent = t.apiKeyLabel;
-      qs('apiKey').placeholder = t.apiKeyPlaceholder;
-      qs('authTokenLabel').textContent = t.authTokenLabel;
-      qs('authToken').placeholder = t.authTokenPlaceholder;
-      qs('saveBtn').textContent = t.save;
-      qs('openSettings').textContent = t.openSettings;
-      qs('envHint').textContent = t.envHint;
-      qs('quickOpsTitle').textContent = t.quickOps;
-      qs('quickOpsHint').textContent = t.quickOpsHint;
-      qs('memoryLabel').textContent = t.memoryLabel;
-      qs('memoryText').placeholder = t.memoryPlaceholder;
-      qs('noteLabel').textContent = t.noteLabel;
-      qs('memoryNote').placeholder = t.notePlaceholder;
-      qs('useSelectionLabel').lastChild.textContent = ' ' + t.useSelection;
-      qs('addMemoryBtn').textContent = t.saveMemory;
-      qs('searchLabel').textContent = t.searchLabel;
-      qs('searchQuery').placeholder = t.searchPlaceholder;
-      qs('quickRecapBtn').textContent = t.search;
-      qs('overviewBtn').textContent = t.overview;
-      qs('deleteBtn').textContent = t.delete;
-      qs('logTitle').textContent = t.logTitle;
-      qs('logHint').textContent = t.logHint;
-
-      const initialBase = '${initial.apiBaseUrl.replace(/'/g, "&#39;")}';
-      qs('apiBaseUrl').value = initialBase;
-      qs('apiKey').value = '${(initial.apiKey || '').replace(/'/g, "&#39;")}';
-      qs('authToken').value = '${(initial.authToken || '').replace(/'/g, "&#39;")}';
-      push('info', t.welcome);
-
-      qs('saveBtn').addEventListener('click', () => {
-        vscodeApi.postMessage({ type: 'saveConfig', data: { apiBaseUrl: qs('apiBaseUrl').value.trim(), apiKey: qs('apiKey').value.trim(), authToken: qs('authToken').value.trim() } });
-      });
-      qs('openSettings').addEventListener('click', () => { vscodeApi.postMessage({ type: 'openSettings' }); });
-      qs('testBtn').addEventListener('click', () => { vscodeApi.postMessage({ type: 'action', action: 'testConnection' }); });
-      qs('addMemoryBtn').addEventListener('click', () => {
-        vscodeApi.postMessage({ type: 'action', action: 'addMemory', payload: { text: qs('memoryText').value.trim(), note: qs('memoryNote').value.trim(), useSelection: qs('useSelection').checked } });
-      });
-      qs('quickRecapBtn').addEventListener('click', () => { vscodeApi.postMessage({ type: 'action', action: 'quickRecap', payload: { query: qs('searchQuery').value.trim() } }); });
-      qs('overviewBtn').addEventListener('click', () => { vscodeApi.postMessage({ type: 'action', action: 'projectOverview' }); });
-      qs('deleteBtn').addEventListener('click', () => { vscodeApi.postMessage({ type: 'action', action: 'deleteMemory' }); });
-
-      window.addEventListener('message', (event) => {
-        const msg = event.data;
-        if (msg?.type === 'connection') { setConn(!!msg.ok); push(msg.ok ? 'success' : 'error', msg.ok ? t.connectionOk : t.connectionFail); }
-        if (msg?.type === 'actionResult') { push(msg.ok ? 'success' : 'error', msg.message || t.toastDefault); }
-        if (msg?.type === 'toast') { push(msg.level === 'error' ? 'error' : 'success', msg.message || t.toastDefault); }
-      });
-    `;
-
-    return `<!DOCTYPE html>
-<html lang="${text.lang}">
-<head>
-  <meta charset="UTF-8">
-  <style>${style}</style>
-</head>
-<body>
-  <div class="hero">
-    <div>
-      <div class="eyebrow">${text.heroEyebrow}</div>
-      <h2>${text.heroTitle}</h2>
-      <div id="heroSubtitle" class="hint">${text.heroSubtitle}</div>
-    </div>
-    <div id="conn" class="badge fail">${text.statusPending}</div>
-  </div>
-
-  <div class="grid">
-    <section class="card">
-      <header><span id="apiCardTitle">${text.apiCard}</span><button class="ghost" id="testBtn">${text.testConnection}</button></header>
-      <label id="apiBaseLabel" for="apiBaseUrl">${text.apiBaseLabel}</label>
-      <input id="apiBaseUrl" type="text" placeholder="https://api.evermind.ai" />
-      <label id="apiKeyLabel" for="apiKey">${text.apiKeyLabel}</label>
-      <div class="row">
-        <input id="apiKey" type="password" placeholder="${text.apiKeyPlaceholder}" />
-        <button id="saveBtn">${text.save}</button>
-      </div>
-      <label id="authTokenLabel" for="authToken" style="margin-top:6px;">${text.authTokenLabel}</label>
-      <input id="authToken" type="password" placeholder="${text.authTokenPlaceholder}" />
-      <div class="row" style="margin-top:6px; justify-content: space-between;">
-        <button class="secondary" id="openSettings">${text.openSettings}</button>
-      </div>
-      <p id="envHint" class="hint">${text.envHint}</p>
-    </section>
-
-    <section class="card">
-      <header><span id="quickOpsTitle">${text.quickOps}</span><span id="quickOpsHint" class="hint">${text.quickOpsHint}</span></header>
-      <label id="memoryLabel" for="memoryText">${text.memoryLabel}</label>
-      <textarea id="memoryText" placeholder="${text.memoryPlaceholder}"></textarea>
-      <label id="noteLabel" for="memoryNote">${text.noteLabel}</label>
-      <textarea id="memoryNote" placeholder="${text.notePlaceholder}"></textarea>
-      <div class="row" style="margin-top:6px; justify-content: space-between;">
-        <label id="useSelectionLabel" class="inline"><input id="useSelection" type="checkbox" checked /> ${text.useSelection}</label>
-        <button id="addMemoryBtn">${text.saveMemory}</button>
-      </div>
-      <label id="searchLabel" for="searchQuery" style="margin-top:10px;">${text.searchLabel}</label>
-      <div class="row">
-        <input id="searchQuery" type="text" placeholder="${text.searchPlaceholder}" />
-        <button id="quickRecapBtn">${text.search}</button>
-      </div>
-      <div class="row" style="margin-top:8px; justify-content: flex-end; gap:8px;">
-        <button class="secondary" id="overviewBtn">${text.overview}</button>
-        <button class="secondary" id="deleteBtn">${text.delete}</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <header><span id="logTitle">${text.logTitle}</span><span id="logHint" class="hint">${text.logHint}</span></header>
-      <ul id="feed"></ul>
-    </section>
-  </div>
-
-  <script>${script}</script>
-</body>
-</html>`;
+  private getHtml(): string {
+    const scriptNonce = nonce();
+    const labels = JSON.stringify({ statusPending: t('statusPending'), statusOk: t('statusOk'), statusFail: t('statusFail'), statusTesting: t('statusTesting'), working: t('working'), ready: t('ready'), welcome: t('welcome') }).replace(/</g, '\\u003c');
+    return `<!DOCTYPE html><html lang="${esc(htmlLanguage())}"><head><meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${scriptNonce}'; style-src 'nonce-${scriptNonce}';">
+    <style nonce="${scriptNonce}">${sharedStyles}
+      body { background: var(--vscode-sideBar-background); }
+      .hero { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+      .hero h2 { margin: 0; }
+      .hero .hint { flex-basis: 100%; margin: 0; }
+      .badge { flex-shrink: 0; white-space: nowrap; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 20px; font-size: .85em; }
+      .badge.ok { color: var(--vscode-testing-iconPassed); }
+      .badge.error { color: var(--vscode-errorForeground); }
+      header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+      h3 { font-size: 1em; margin: 0; }
+      label { display: block; margin: 12px 0 5px; overflow-wrap: anywhere; }
+      input:not([type="checkbox"]), textarea { width: 100%; min-width: 0; border: 1px solid var(--vscode-input-border, var(--vscode-panel-border)); border-radius: 5px; padding: 8px; font: inherit; background: var(--vscode-input-background); color: var(--vscode-input-foreground); }
+      textarea { min-height: 76px; resize: vertical; }
+      .checkbox { display: flex; align-items: flex-start; gap: 7px; margin: 10px 0; }
+      input[type="checkbox"] { flex: 0 0 auto; width: auto; margin: 2px 0 0; padding: 0; accent-color: var(--vscode-button-background); }
+      .actions > button { flex: 1 1 auto; }
+      .search-row { display: flex; flex-wrap: wrap; gap: 8px; }
+      .search-row input { flex: 1 1 120px; }
+      .search-row button { flex: 0 0 auto; }
+      #activity { margin: 0 0 8px; }
+      #feed { list-style: none; padding: 0; margin: 0; }
+      #feed li { padding: 7px 0; border-top: 1px solid var(--vscode-panel-border); overflow-wrap: anywhere; }
+      #feed .error { color: var(--vscode-errorForeground); }
+    </style></head><body>
+      <section class="card hero"><h2>EverMemOS</h2><span id="connection" class="badge" role="status">${esc(t('statusPending'))}</span><p class="hint">${esc(t('heroSubtitle'))}</p></section>
+      <section class="card"><header><h3>${esc(t('apiCard'))}</h3><button id="test" data-action="testConnection">${esc(t('testConnection'))}</button></header>
+        <label for="apiBaseUrl">${esc(t('apiBaseLabel'))}</label><input id="apiBaseUrl" type="url" placeholder="https://api.evermind.ai">
+        <label for="apiKey">${esc(t('apiKeyLabel'))}</label><input id="apiKey" type="password" autocomplete="off" placeholder="${esc(t('apiKeyPlaceholder'))}">
+        <p class="hint">${esc(t('envHint'))}</p>
+        <label for="authToken">${esc(t('authTokenLabel'))}</label><input id="authToken" type="password" autocomplete="off" placeholder="${esc(t('authTokenPlaceholder'))}">
+        <div class="actions"><button id="save">${esc(t('saveConfig'))}</button><button id="settings" class="secondary">${esc(t('openSettings'))}</button></div>
+      </section>
+      <section class="card"><h3>${esc(t('quickOps'))}</h3>
+        <label for="memoryText">${esc(t('memoryLabel'))}</label><textarea id="memoryText" placeholder="${esc(t('memoryPlaceholder'))}"></textarea>
+        <label for="memoryNote">${esc(t('optionalNote'))}</label><textarea id="memoryNote" placeholder="${esc(t('notePlaceholder'))}"></textarea>
+        <label class="checkbox" for="useSelection"><input id="useSelection" type="checkbox" checked><span>${esc(t('useSelection'))}</span></label>
+        <div class="actions"><button data-action="addMemory">${esc(t('saveMemory'))}</button></div>
+        <label for="query">${esc(t('searchLabel'))}</label><div class="search-row"><input id="query" type="text" placeholder="${esc(t('searchPlaceholder'))}"><button data-action="quickRecap">${esc(t('search'))}</button></div>
+        <p class="hint">${esc(t('scopeHint'))}</p>
+        <div class="actions"><button class="secondary" data-action="projectOverview">${esc(t('overview'))}</button><button class="secondary" data-action="deleteMemory">${esc(t('deleteMemory'))}</button></div>
+      </section>
+      <section class="card"><header><h3>${esc(t('logTitle'))}</h3><span class="hint">${esc(t('logHint'))}</span></header><p id="activity" class="hint" role="status">${esc(t('ready'))}</p><ul id="feed" aria-live="polite" aria-relevant="additions"></ul></section>
+      <script nonce="${scriptNonce}">
+        const vscode = acquireVsCodeApi();
+        const strings = ${labels};
+        const byId = id => document.getElementById(id);
+        const connection = byId('connection');
+        const setConnection = (text, state = '') => { connection.textContent = text; connection.className = 'badge ' + state; };
+        const append = (text, level = '') => { const li = document.createElement('li'); li.className = level; li.textContent = new Date().toLocaleTimeString(document.documentElement.lang) + ' · ' + text; byId('feed').prepend(li); while(byId('feed').children.length > 12) byId('feed').lastChild.remove(); };
+        let busy = false;
+        const state = vscode.getState() || {};
+        for (const id of ['memoryText', 'memoryNote', 'query']) { if(typeof state[id] === 'string') byId(id).value = state[id]; }
+        if(typeof state.useSelection === 'boolean') byId('useSelection').checked = state.useSelection;
+        document.addEventListener('input', () => vscode.setState({ memoryText: byId('memoryText').value, memoryNote: byId('memoryNote').value, query: byId('query').value, useSelection: byId('useSelection').checked }));
+        document.addEventListener('click', event => {
+          const button = event.target.closest('button');
+          if(!button || busy) return;
+          if(button.id === 'settings') { vscode.postMessage({type:'openSettings'}); return; }
+          if(button.id === 'save') { vscode.postMessage({type:'saveConfig',data:{apiBaseUrl:byId('apiBaseUrl').value,apiKey:byId('apiKey').value,authToken:byId('authToken').value}}); return; }
+          const action = button.dataset.action;
+          if(action) vscode.postMessage({type:'action',action,payload:{text:byId('memoryText').value,note:byId('memoryNote').value,useSelection:byId('useSelection').checked,query:byId('query').value}});
+        });
+        byId('query').addEventListener('keydown', event => { if(event.key === 'Enter' && !busy) document.querySelector('[data-action="quickRecap"]').click(); });
+        window.addEventListener('message', event => {
+          const msg = event.data;
+          if(msg.type === 'config') { for(const id of ['apiBaseUrl','apiKey','authToken']) byId(id).value = msg.data[id] || ''; setConnection(strings.statusPending); }
+          if(msg.type === 'busy') { busy = msg.busy; document.querySelectorAll('button').forEach(button => button.disabled = busy); document.body.setAttribute('aria-busy', String(busy)); byId('activity').textContent = busy ? strings.working : strings.ready; if(msg.connecting) setConnection(strings.statusTesting); else if(!busy && connection.textContent === strings.statusTesting) setConnection(strings.statusPending); }
+          if(msg.type === 'result') { append(msg.message || strings.ready, msg.ok || msg.cancelled ? '' : 'error'); if(msg.connection) setConnection(msg.cancelled ? strings.statusPending : msg.ok ? strings.statusOk : strings.statusFail, msg.cancelled ? '' : msg.ok ? 'ok' : 'error'); }
+        });
+        append(strings.welcome);
+        vscode.postMessage({type:'ready'});
+      </script></body></html>`;
   }
 }
