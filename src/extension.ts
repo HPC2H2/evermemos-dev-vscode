@@ -1,98 +1,47 @@
 import * as vscode from 'vscode';
 import { EvermemConfigViewProvider } from './sidebar';
-import {
-  EXTENSION_NAME,
-  outputChannel,
-} from './config';
-import {
-  handleAddMemory,
-  handleDeleteMemory,
-  handleProjectOverview,
-  handleQuickRecap,
-} from './commands';
-import { testConnection, getConfig } from './config';
+import { configError, EXTENSION_NAME, isCancelled, outputChannel, readConfig, testConnection, withCancellation } from './config';
+import { handleAddMemory, handleDeleteMemory, handleError, handleProjectOverview, handleQuickRecap } from './commands';
+import { clearApiRouteCache } from './api';
+import { disposeResults, insertSnippet } from './results';
+import { t } from './i18n';
 
-export function activate(context: vscode.ExtensionContext) {
-  console.log(`[${EXTENSION_NAME}] Extension activated`);
-
-  const provider = new EvermemConfigViewProvider(context, {
+export function activate(context: vscode.ExtensionContext): void {
+  const provider = new EvermemConfigViewProvider({
     testConnection: async () => {
-      const config = getConfig();
-      if (!config) {
-        return false;
+      const config = readConfig();
+      const message = configError(config);
+      if (message) { return { ok: false, message }; }
+      try {
+        const ok = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `${EXTENSION_NAME}: ${t('statusTesting')}`, cancellable: true },
+          (_progress, token) => withCancellation(token, signal => testConnection(config, signal)));
+        return { ok, message: t(ok ? 'connectionOk' : 'connectionFail') };
+      } catch (error) {
+        return isCancelled(error) ? { ok: false, cancelled: true, message: t('cancelled') } : { ok: false, message: t('connectionFail') };
       }
-      return testConnection(config);
     },
-    addMemory: (payload) => handleAddMemory(payload),
-    quickRecap: (payload) => handleQuickRecap(payload),
-    projectOverview: (payload) => handleProjectOverview(payload),
-    deleteMemory: () => handleDeleteMemory(),
+    addMemory: handleAddMemory, quickRecap: handleQuickRecap, projectOverview: handleProjectOverview, deleteMemory: handleDeleteMemory,
   });
-
+  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBar.text = '$(database) EverMemOS';
+  statusBar.tooltip = t('openSidebar');
+  statusBar.command = 'evermem.openSidebar';
+  statusBar.show();
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(EvermemConfigViewProvider.viewId, provider)
-  );
-
-  const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  context.subscriptions.push(outputChannel);
-  statusBarItem.text = '$(database) EverMemOS';
-  statusBarItem.tooltip = 'Open EverMemOS sidebar';
-  statusBarItem.command = 'evermem.openSidebar';
-  statusBarItem.show();
-
-  const commands = [
+    outputChannel, statusBar, provider,
+    vscode.window.registerWebviewViewProvider(EvermemConfigViewProvider.viewId, provider),
     vscode.commands.registerCommand('evermem.addMemory', () => handleAddMemory()),
     vscode.commands.registerCommand('evermem.quickRecap', () => handleQuickRecap()),
     vscode.commands.registerCommand('evermem.projectOverview', () => handleProjectOverview()),
     vscode.commands.registerCommand('evermem.deleteMemory', () => handleDeleteMemory()),
-    vscode.commands.registerCommand('evermem.insertSnippet', (_event, code?: string) => {
-      const editor = vscode.window.activeTextEditor;
-      if (!editor) {
-        vscode.window.showWarningMessage(`${EXTENSION_NAME}: No active editor to insert snippet.`);
-        return;
-      }
-      const snippet = code || '';
-      editor.edit((editBuilder) => {
-        editBuilder.insert(editor.selection.active, snippet);
-      });
-      vscode.window.showInformationMessage(`${EXTENSION_NAME}: Snippet inserted.`);
+    vscode.commands.registerCommand('evermem.openSidebar', () => vscode.commands.executeCommand('workbench.view.extension.evermemViewContainer')),
+    vscode.commands.registerCommand('evermem.insertSnippet', async (_event: unknown, code?: string) => {
+      if (typeof code !== 'string') { return; }
+      try { await insertSnippet(code, 'plaintext'); } catch (error) { handleError(error); }
     }),
-    vscode.commands.registerCommand('evermem.openSidebar', () => {
-      vscode.commands.executeCommand('workbench.view.extension.evermemViewContainer');
-    }),
-  ];
-  commands.forEach((cmd) => context.subscriptions.push(cmd));
-  context.subscriptions.push(statusBarItem);
-
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('evermem')) {
-        vscode.window
-          .showInformationMessage(
-            `${EXTENSION_NAME}: Configuration updated. Some changes may require restart.`,
-            'Reload Window'
-          )
-          .then((selection) => {
-            if (selection === 'Reload Window') {
-              vscode.commands.executeCommand('workbench.action.reloadWindow');
-            }
-          });
-      }
-    })
+    vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('evermem')) { clearApiRouteCache(); } }),
   );
-
-  const config = getConfig();
-  if (config) {
-    testConnection(config).then((isConnected) => {
-      if (isConnected) {
-        console.log(`[${EXTENSION_NAME}] Connected to server at ${config.apiBaseUrl}`);
-      } else {
-        console.warn(`[${EXTENSION_NAME}] Cannot connect to server at ${config.apiBaseUrl}`);
-      }
-    });
-  }
+  // Opening the sidebar should not show an error or send network traffic before the user acts.
 }
 
-export function deactivate() {
-  console.log(`[${EXTENSION_NAME}] Extension deactivated`);
-}
+export function deactivate(): void { disposeResults(); clearApiRouteCache(); }

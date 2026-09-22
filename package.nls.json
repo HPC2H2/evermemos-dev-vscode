@@ -1,0 +1,12 @@
+{
+  "extension.description": "Save, search, and revisit EverMemOS memories from VS Code.",
+  "view.name": "EverMemOS Cloud",
+  "command.addMemory": "Add Memory",
+  "command.quickRecap": "Quick Recap",
+  "command.projectOverview": "Project Overview",
+  "command.deleteMemory": "Delete Memory",
+  "command.openSidebar": "Open Sidebar",
+  "config.apiBaseUrl": "Base URL of the EverMemOS API.",
+  "config.apiKey": "API key from console.evermind.ai. Also supports the `EVERMEM_API_KEY` environment variable.",
+  "config.authToken": "Optional token for a legacy self-hosted server. Leave blank when using an API key."
+}
